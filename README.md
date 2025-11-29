@@ -8,6 +8,38 @@ Group Member:
 
 Jiajun Liu, Haoxiang Sun, Yuan Tian, Xuyan Ye, Zijie Lin
 
+## Inital Structure
+
+```
+DSP_Final_Project/
+├── ESC-50
+├── README.md               # 项目介绍、运行指南、成员分工
+├── requirements.txt        # 依赖库
+├── data/                   # 数据存放 (不要上传到git，只放占位符)
+│   ├── raw/                # 原始WAV文件
+│   └── processed/          # 提取好的特征 (npy文件)
+├── src/                    # 源代码
+│   ├── dsp_core/           # 【核心】手写DSP算法模块
+│   │   ├── __init__.py
+│   │   ├── fft.py          # 手写FFT实现
+│   │   ├── stft.py         # 手写STFT实现
+│   │   └── mfcc.py         # 手写MFCC实现
+│   ├── models/             # 神经网络模型
+│   │   ├── resnet.py
+│   │   └── transformer.py
+│   ├── utils/              # 工具函数
+│   │   ├── dataset.py      # PyTorch Dataset/Dataloader
+│   │   ├── metrics.py      # 计算 Top-K Accuracy, Precision 等
+│   │   └── plot.py         # 绘图脚本
+│   └── train.py            # 训练脚本
+├── experiments/            # 实验记录 (Jupyter Notebooks)
+│   ├── 01_dsp_verification.ipynb  # 验证手写算法与标准库的误差
+│   ├── 02_task1_retrieval.ipynb   # 任务1：检索实验与超参数分析
+│   ├── 03_task2_classification.ipynb # 任务2：分类训练可视化
+│   └── 04_large_model_compare.ipynb  # 大模型对比实验
+├── scripts/                # 一键运行脚本 (run_task1.sh, run_task2.sh)
+└── report/                 # 最终报告与图表资源
+```
 
 ## Task-description
 
