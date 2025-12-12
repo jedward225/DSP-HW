@@ -228,38 +228,51 @@ def mfcc(
     return mfccs
 
 
-def delta(features: np.ndarray, width: int = 9, order: int = 1) -> np.ndarray:
+def delta(features: np.ndarray, width: int = 9, order: int = 1, axis: int = -1, mode: str = 'interp') -> np.ndarray:
     """
-    Compute delta (first derivative) features.
+    Compute delta (derivative) features using Savitzky-Golay filtering.
+    
+    This matches librosa.feature.delta which uses scipy.signal.savgol_filter.
     Delta features capture temporal dynamics of the signal.
-    - delta[t] = Σ(n=-w to w) n * features[t + n] / Σ(n=-w to w) n²
+
+    Parameters
+    ----------
+    features : np.ndarray
+        Input feature matrix (e.g., MFCCs with shape (n_mfcc, n_frames))
+    width : int
+        Number of frames over which to compute the delta features.
+        Must be odd and >= 3.
+    order : int
+        The order of the difference operator (1 for first derivative, 2 for second, etc.)
+    axis : int
+        The axis along which to compute deltas. Default is -1 (last axis).
+    mode : str
+        Padding mode for boundaries. Default is 'interp' to match librosa.
+
+    Returns
+    -------
+    delta_features : np.ndarray
+        Delta features with same shape as input.
     """
+    from scipy.signal import savgol_filter
+    
     features = np.asarray(features)
 
     if width < 3 or width % 2 == 0:
         raise ValueError("Width must be odd and >= 3")
 
-    half_width = width // 2
-
-    # Pad edges by repeating first/last frames
-    padded = np.pad(features, ((0, 0), (half_width, half_width)), mode='edge')
-
-    # Compute delta using regression formula
-    # This is equivalent to convolving with [w, w-1, ..., -w+1, -w] / denominator
-    n = np.arange(-half_width, half_width + 1)
-    denominator = np.sum(n ** 2)
-
-    delta_features = np.zeros_like(features)
-
-    for t in range(features.shape[1]):
-        # Extract window centered at t (accounting for padding)
-        window = padded[:, t:t + width]
-        # Weighted sum
-        delta_features[:, t] = np.sum(window * n, axis=1) / denominator
-
-    # Recursively compute higher-order deltas
-    if order > 1:
-        return delta(delta_features, width=width, order=order - 1)
+    # Use Savitzky-Golay filter to compute derivatives
+    # For order=n, we compute the n-th derivative directly using deriv=order
+    # polyorder must be >= deriv, so we use polyorder=order
+    delta_features = savgol_filter(
+        features,
+        window_length=width,
+        polyorder=order,
+        deriv=order,
+        delta=1.0,
+        axis=axis,
+        mode=mode
+    )
 
     return delta_features
 
