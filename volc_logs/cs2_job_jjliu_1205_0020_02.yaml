@@ -1,0 +1,54 @@
+
+AccessType: Public
+ActiveDeadlineSeconds: 432000
+DelayExitTimeSeconds: 0
+Description: ''
+DiagOptions:
+- Enable: false
+  Name: EnvironmentalDiagnosis
+- Enable: true
+  Name: PythonDetection
+  PythonDetectionInterval: 3600
+- Enable: true
+  LogDetectionInterval: 1800
+  Name: LogDetection
+EnableTensorBoard: true
+Entrypoint: bash /home/jjliu/DSP-HW/volc_logs/cs2_job_jjliu_1205_0020_02.sh 
+Envs: null
+Framework: PyTorchDDP
+ImageUrl: sreal-cn-beijing.cr.volces.com/sreal-namespace/python:beta0.2
+Preemptible: false
+Priority: 4
+ResourceQueueName: c-queue
+RetryOptions:
+  EnableRetry: false
+  IntervalSeconds: 120
+  MaxRetryTimes: 5
+  PolicySets:
+  - Failed
+Storages:
+- MountPath: /home
+  ReadOnly: false
+  SubPath: workspace
+  Type: Vepfs
+  VepfsId: vepfs-cnbj61ad3338fd84
+- Type: "Tos"
+  MountPath: /data_tos
+  Bucket: yywj-bj
+  Prefix: /
+  FsName: yywj-fs
+- Type: "Tos"
+  MountPath: /outside-data
+  Bucket: outside-data
+  Prefix: /
+  FsName: yywj-fs
+TaskName: cs2_job_jjliu_1205_0020_02
+TaskRoleSpecs:
+- Flavor: ml.xni3c.45xlarge
+  GpuRate: 1
+  RoleName: worker
+  RoleReplicas: 1
+TensorBoardStorage:
+  SubPath: etc/tensorboard_logs
+  Type: Vepfs
+  VepfsId: vepfs-cnbj61ad3338fd84
