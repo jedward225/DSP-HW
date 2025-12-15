@@ -144,7 +144,8 @@ def mfcc(
     fmin: float = 0.0,
     fmax: Optional[float] = None,
     preemphasis: float = 0.0,
-    lifter: int = 0
+    lifter: int = 0,
+    log_mel: bool = False
 ) -> np.ndarray:
     """
     Examples
@@ -201,6 +202,10 @@ def mfcc(
     # Librosa uses power_to_db: 10 * log10(S / ref)
     from .stft import power_to_db
     log_mel_spectrum = power_to_db(mel_spectrum, ref=1.0, amin=1e-10, top_db=80.0)
+
+    # return log_mel_spectrum if needed
+    if log_mel == True:
+        return log_mel_spectrum
 
     # Step 7: Apply DCT to get MFCCs
 
