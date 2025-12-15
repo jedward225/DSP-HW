@@ -140,19 +140,20 @@ def stft(
     # Calculate number of frames
     n_frames = 1 + (len(y) - n_fft) // hop_length
 
-    # Pre-allocate output array
-    # Shape: (n_fft // 2 + 1, n_frames) for one-sided spectrum
-    stft_matrix = np.empty((n_fft // 2 + 1, n_frames), dtype=np.complex128)
+    # Extract all frames at once (vectorized)
+    # Create frame indices
+    frame_starts = np.arange(n_frames) * hop_length
+    frame_indices = frame_starts[:, np.newaxis] + np.arange(n_fft)
 
-    # Extract frames and compute FFT
-    for i in range(n_frames):
-        # Extract frame
-        start = i * hop_length
-        end = start + n_fft
-        frame = y[start:end]
+    # Extract frames: shape (n_frames, n_fft)
+    frames = y[frame_indices]
 
-        windowed_frame = frame * window_func
-        stft_matrix[:, i] = rfft(windowed_frame, n=n_fft)
+    # Apply window to all frames at once
+    windowed_frames = frames * window_func
+
+    # Batch FFT using optimized function
+    from .fft import rfft_batch
+    stft_matrix = rfft_batch(windowed_frames).T  # Transpose to (n_bins, n_frames)
 
     return stft_matrix
 
