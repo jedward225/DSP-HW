@@ -1,0 +1,210 @@
+"""
+BEATs-based audio retrieval.
+
+Uses pretrained BEATs (Audio Pre-Training with Acoustic Tokenizers) model
+for audio embeddings with cosine distance.
+"""
+
+import torch
+import numpy as np
+from typing import Optional, List, Dict
+from pathlib import Path
+import sys
+
+# Add project root to path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.retrieval.base import BaseRetriever
+
+
+class BEATsRetriever(BaseRetriever):
+    """
+    BEATs embedding retrieval.
+
+    Uses pretrained BEATs transformer model for audio embeddings.
+    BEATs is a self-supervised audio representation model trained
+    with acoustic tokenizers.
+
+    Note:
+        - BEATs requires 16kHz audio input
+        - Embeddings are 768-dimensional (transformer hidden size)
+        - Uses cosine distance
+    """
+
+    def __init__(
+        self,
+        name: str = "BEATs",
+        device: str = 'cuda',
+        sr: int = 16000,
+        checkpoint_path: str = None,
+        layer: int = -1,
+        pooling: str = 'mean',
+    ):
+        """
+        Initialize BEATs retriever.
+
+        Args:
+            name: Method name
+            device: Device for computation ('cpu' or 'cuda')
+            sr: Sample rate (internally resamples to 16kHz)
+            checkpoint_path: Path to BEATs checkpoint (required)
+            layer: Which transformer layer to use (-1 = last)
+            pooling: Pooling method for temporal dimension ('mean', 'max', 'cls')
+        """
+        super().__init__(name=name, device=device, sr=sr)
+
+        if checkpoint_path is None:
+            checkpoint_path = str(project_root / 'beats' / 'BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt')
+
+        self.checkpoint_path = checkpoint_path
+        self.layer = layer
+        self.pooling = pooling
+        self.beats_sr = 16000  # BEATs requires 16kHz
+
+        # Load BEATs model
+        self._load_beats_model()
+
+    def _load_beats_model(self):
+        """Load the BEATs model from checkpoint."""
+        # Add BEATs source to path
+        beats_src_path = project_root / 'unilm' / 'beats'
+        if str(beats_src_path) not in sys.path:
+            sys.path.insert(0, str(beats_src_path))
+
+        from BEATs import BEATs, BEATsConfig
+
+        # Load checkpoint
+        checkpoint = torch.load(self.checkpoint_path, map_location='cpu')
+
+        cfg = BEATsConfig(checkpoint['cfg'])
+        self.beats_model = BEATs(cfg)
+        self.beats_model.load_state_dict(checkpoint['model'])
+        self.beats_model.to(self.device)
+        self.beats_model.eval()
+
+    def _resample_audio(self, waveform: np.ndarray, orig_sr: int) -> np.ndarray:
+        """Resample audio to BEATs' required 16kHz."""
+        if orig_sr == self.beats_sr:
+            return waveform
+
+        # Use librosa for resampling
+        import librosa
+        return librosa.resample(waveform, orig_sr=orig_sr, target_sr=self.beats_sr)
+
+    def extract_features(
+        self,
+        waveform: torch.Tensor,
+        sr: int = None
+    ) -> torch.Tensor:
+        """
+        Extract BEATs embeddings from audio waveform.
+
+        Args:
+            waveform: Audio waveform tensor
+            sr: Sample rate (uses self.sr if not provided)
+
+        Returns:
+            768-dimensional BEATs embedding
+        """
+        sr = sr or self.sr
+
+        # Convert to numpy for resampling
+        if isinstance(waveform, torch.Tensor):
+            waveform_np = waveform.cpu().numpy()
+        else:
+            waveform_np = waveform
+
+        # Ensure 1D
+        if waveform_np.ndim > 1:
+            waveform_np = waveform_np.flatten()
+
+        # Resample to 16kHz if needed
+        waveform_np = self._resample_audio(waveform_np, sr)
+
+        # Convert to tensor and scale (BEATs expects waveform * 2^15)
+        audio_tensor = torch.from_numpy(waveform_np).float().unsqueeze(0).to(self.device)
+
+        # Extract features
+        with torch.no_grad():
+            # BEATs extract_features returns (features, padding_mask)
+            # features shape: (batch, time, 768)
+            features, _ = self.beats_model.extract_features(audio_tensor)
+
+            # Pool across time dimension
+            if self.pooling == 'mean':
+                embedding = features.mean(dim=1)  # (batch, 768)
+            elif self.pooling == 'max':
+                embedding = features.max(dim=1)[0]  # (batch, 768)
+            elif self.pooling == 'cls':
+                # Use first token as CLS
+                embedding = features[:, 0, :]  # (batch, 768)
+            else:
+                raise ValueError(f"Unknown pooling method: {self.pooling}")
+
+        # Return (768,) tensor
+        return embedding.squeeze(0)
+
+    def compute_distance(
+        self,
+        query_features: torch.Tensor,
+        gallery_features: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute cosine distance between query and gallery features.
+
+        Args:
+            query_features: Query embedding (768,)
+            gallery_features: Gallery embeddings (N, 768)
+
+        Returns:
+            Cosine distances (N,)
+        """
+        # L2 normalize
+        query_norm = query_features / (query_features.norm() + 1e-10)
+        gallery_norm = gallery_features / (gallery_features.norm(dim=1, keepdim=True) + 1e-10)
+
+        # Cosine similarity -> distance
+        similarity = torch.matmul(gallery_norm, query_norm)
+        distance = 1 - similarity
+
+        return distance
+
+    def to(self, device: str) -> 'BEATsRetriever':
+        """Move retriever to device."""
+        self.device = device
+        self.beats_model.to(device)
+        if self._gallery_features is not None:
+            self._gallery_features = self._gallery_features.to(device)
+        if self._gallery_labels is not None:
+            self._gallery_labels = self._gallery_labels.to(device)
+        return self
+
+
+def create_beats_retriever(
+    device: str = 'cuda',
+    checkpoint_path: str = None,
+    pooling: str = 'mean',
+    **kwargs
+) -> BEATsRetriever:
+    """
+    Create BEATs embedding retriever.
+
+    Uses pretrained BEATs transformer for audio embeddings.
+
+    Args:
+        device: Computation device
+        checkpoint_path: Path to BEATs checkpoint (uses default if None)
+        pooling: Pooling method ('mean', 'max', 'cls')
+        **kwargs: Additional arguments
+
+    Returns:
+        BEATsRetriever instance
+    """
+    return BEATsRetriever(
+        name="BEATs",
+        device=device,
+        sr=16000,  # BEATs requires 16kHz
+        checkpoint_path=checkpoint_path,
+        pooling=pooling,
+    )
