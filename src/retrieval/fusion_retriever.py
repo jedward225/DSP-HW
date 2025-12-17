@@ -9,10 +9,6 @@ This module provides:
 import torch
 import numpy as np
 from typing import Optional, List, Dict, Tuple
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.retrieval.base import BaseRetriever
 
@@ -80,7 +76,7 @@ class LateFusionRetriever(BaseRetriever):
 
         # Store labels from first retriever
         if self.retrievers:
-            self._gallery_labels = self.retrievers[0]._gallery_labels
+            self._gallery_labels = self.retrievers[0]._gallery_labels.to(self.device)
             self._gallery_indices = self.retrievers[0]._gallery_indices
 
     def clear_gallery(self):
@@ -94,7 +90,8 @@ class LateFusionRetriever(BaseRetriever):
         self,
         query_waveform: torch.Tensor,
         k: int = None,
-        return_distances: bool = False
+        return_distances: bool = False,
+        query_sr: int = None,
     ) -> torch.Tensor:
         """
         Retrieve using weighted distance fusion.
@@ -107,14 +104,28 @@ class LateFusionRetriever(BaseRetriever):
         Returns:
             Indices of top-k results (and optionally distances)
         """
+        if self._gallery_labels is None:
+            raise RuntimeError("Gallery not built. Call build_gallery() first.")
+
+        n_gallery = len(self._gallery_labels)
+        fusion_device = torch.device(self.device)
+        fusion_dtype = torch.float32
         all_distances = []
 
         for retriever in self.retrievers:
-            # Get retriever's distances
-            _, distances = retriever.retrieve(
-                query_waveform, k=None, return_distances=True
+            # Get retriever's sorted indices and distances
+            sorted_indices, sorted_distances = retriever.retrieve(
+                query_waveform, k=None, return_distances=True, query_sr=query_sr
             )
-            all_distances.append(distances)
+
+            sorted_indices = sorted_indices.to(fusion_device)
+            sorted_distances = sorted_distances.to(device=fusion_device, dtype=fusion_dtype)
+
+            # Reconstruct full distance array indexed by gallery position
+            # (sorted_distances are in rank order, we need gallery order)
+            full_dist = torch.zeros(n_gallery, dtype=fusion_dtype, device=fusion_device)
+            full_dist[sorted_indices] = sorted_distances
+            all_distances.append(full_dist)
 
         # Normalize each distance array to [0, 1]
         normalized_distances = []
@@ -204,7 +215,7 @@ class RankFusionRetriever(BaseRetriever):
             retriever.build_gallery(gallery_samples, show_progress=False)
 
         if self.retrievers:
-            self._gallery_labels = self.retrievers[0]._gallery_labels
+            self._gallery_labels = self.retrievers[0]._gallery_labels.to(self.device)
             self._gallery_indices = self.retrievers[0]._gallery_indices
 
     def clear_gallery(self):
@@ -218,7 +229,8 @@ class RankFusionRetriever(BaseRetriever):
         self,
         query_waveform: torch.Tensor,
         k: int = None,
-        return_distances: bool = False
+        return_distances: bool = False,
+        query_sr: int = None,
     ) -> torch.Tensor:
         """
         Retrieve using reciprocal rank fusion.
@@ -231,21 +243,25 @@ class RankFusionRetriever(BaseRetriever):
         Returns:
             Indices of top-k results
         """
-        n_gallery = len(self.retrievers[0]._gallery_labels)
+        if self._gallery_labels is None:
+            raise RuntimeError("Gallery not built. Call build_gallery() first.")
+
+        n_gallery = len(self._gallery_labels)
+        fusion_device = torch.device(self.device)
 
         # Get rankings from each retriever
         all_ranks = []
         for retriever in self.retrievers:
             # Get full ranking
-            indices = retriever.retrieve(query_waveform, k=None, return_distances=False)
+            indices = retriever.retrieve(query_waveform, k=None, return_distances=False, query_sr=query_sr)
+            indices = indices.to(fusion_device)
             # Convert to rank array
-            ranks = torch.zeros(n_gallery, dtype=torch.long, device=indices.device)
-            for rank, idx in enumerate(indices):
-                ranks[idx] = rank
+            ranks = torch.empty(n_gallery, dtype=torch.long, device=fusion_device)
+            ranks[indices] = torch.arange(n_gallery, device=fusion_device)
             all_ranks.append(ranks)
 
         # Compute RRF scores
-        rrf_scores = torch.zeros(n_gallery, dtype=torch.float32, device=all_ranks[0].device)
+        rrf_scores = torch.zeros(n_gallery, dtype=torch.float32, device=fusion_device)
         for ranks in all_ranks:
             rrf_scores += 1.0 / (self.rrf_k + ranks.float())
 

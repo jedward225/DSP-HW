@@ -7,12 +7,6 @@ Uses trained autoencoder latent space for audio retrieval.
 import torch
 import numpy as np
 from typing import Optional, List, Dict
-from pathlib import Path
-import sys
-
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from src.retrieval.base import BaseRetriever
 from src.dsp_core import log_melspectrogram
@@ -30,7 +24,7 @@ class AutoencoderRetriever(BaseRetriever):
         self,
         model_path: str,
         name: str = "Autoencoder",
-        device: str = 'cuda',
+        device: Optional[str] = None,
         sr: int = 22050,
         n_mels: int = 128,
         n_fft: int = 2048,
@@ -50,6 +44,8 @@ class AutoencoderRetriever(BaseRetriever):
             hop_length: Hop length
             n_frames: Number of time frames (for padding/truncation)
         """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
         super().__init__(name=name, device=device, sr=sr)
 
         self.model_path = model_path
@@ -73,6 +69,10 @@ class AutoencoderRetriever(BaseRetriever):
         n_mels = config.get('n_mels', self.n_mels)
         n_frames = config.get('n_frames', self.n_frames)
         latent_dim = config.get('latent_dim', 256)
+
+        # Update self values from checkpoint config to ensure preprocessing matches model
+        self.n_mels = n_mels
+        self.n_frames = n_frames
 
         # Create and load model
         self.model = MelAutoencoder(
@@ -109,6 +109,8 @@ class AutoencoderRetriever(BaseRetriever):
         mel_max = mel.max()
         if mel_max - mel_min > 1e-10:
             mel = (mel - mel_min) / (mel_max - mel_min)
+        else:
+            mel = np.zeros_like(mel)
 
         return torch.from_numpy(mel).float()
 
@@ -178,7 +180,7 @@ class AutoencoderRetriever(BaseRetriever):
 
 def create_autoencoder_retriever(
     model_path: str,
-    device: str = 'cuda',
+    device: Optional[str] = None,
     **kwargs
 ) -> AutoencoderRetriever:
     """

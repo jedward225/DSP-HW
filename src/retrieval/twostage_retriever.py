@@ -8,10 +8,6 @@ Stage 2: Fine re-ranking using DTW or other expensive methods → Top-K results
 import torch
 import numpy as np
 from typing import Optional, List, Dict
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.retrieval.base import BaseRetriever
 
@@ -95,7 +91,8 @@ class TwoStageRetriever(BaseRetriever):
         self,
         query_waveform: torch.Tensor,
         k: int = None,
-        return_distances: bool = False
+        return_distances: bool = False,
+        query_sr: int = None,
     ) -> torch.Tensor:
         """
         Two-stage retrieval.
@@ -116,7 +113,7 @@ class TwoStageRetriever(BaseRetriever):
 
         # Stage 1: Coarse recall
         coarse_indices = self.coarse_retriever.retrieve(
-            query_waveform, k=self.top_n, return_distances=False
+            query_waveform, k=self.top_n, return_distances=False, query_sr=query_sr
         )
 
         # If top_n >= gallery size, just use coarse results
@@ -125,7 +122,7 @@ class TwoStageRetriever(BaseRetriever):
                 coarse_indices = coarse_indices[:k]
             if return_distances:
                 _, coarse_dist = self.coarse_retriever.retrieve(
-                    query_waveform, k=len(coarse_indices), return_distances=True
+                    query_waveform, k=len(coarse_indices), return_distances=True, query_sr=query_sr
                 )
                 return coarse_indices, coarse_dist
             return coarse_indices
@@ -140,14 +137,16 @@ class TwoStageRetriever(BaseRetriever):
         # Re-rank using fine retriever
         if return_distances:
             fine_indices, fine_distances = self.fine_retriever.retrieve(
-                query_waveform, k=k, return_distances=True
+                query_waveform, k=k, return_distances=True, query_sr=query_sr
             )
         else:
             fine_indices = self.fine_retriever.retrieve(
-                query_waveform, k=k, return_distances=False
+                query_waveform, k=k, return_distances=False, query_sr=query_sr
             )
 
         # Map back to original gallery indices
+        # Ensure both tensors are on the same device to avoid indexing errors
+        fine_indices = fine_indices.to(coarse_indices.device)
         original_indices = coarse_indices[fine_indices]
 
         if return_distances:

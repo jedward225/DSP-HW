@@ -8,10 +8,6 @@ Numba JIT compilation is used for acceleration.
 import torch
 import numpy as np
 from typing import Optional, Tuple, List, TYPE_CHECKING
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.retrieval.base import BaseRetriever
 from src.dsp_core import mfcc
@@ -189,27 +185,39 @@ def _fastdtw_recursive(x: np.ndarray, y: np.ndarray, radius: int) -> float:
     D = np.full((n + 1, m + 1), np.inf)
     D[0, 0] = 0.0
 
-    # Mark valid cells based on projected path
+    # First pass: mark valid cells based on projected path
+    # Using a separate array to track which cells are in the band
+    valid = np.zeros((n + 1, m + 1), dtype=np.bool_)
+    valid[0, 0] = True
+
     for p in range(low_res_path.shape[0]):
         i_low = low_res_path[p, 0]
         j_low = low_res_path[p, 1]
 
         # Project to full resolution with radius expansion
-        i_start = max(0, i_low * 2 - radius)
-        i_end = min(n, i_low * 2 + 2 + radius)
-        j_start = max(0, j_low * 2 - radius)
-        j_end = min(m, j_low * 2 + 2 + radius)
+        i_start = max(1, i_low * 2 - radius + 1)
+        i_end = min(n + 1, i_low * 2 + 2 + radius + 1)
+        j_start = max(1, j_low * 2 - radius + 1)
+        j_end = min(m + 1, j_low * 2 + 2 + radius + 1)
 
         for i in range(i_start, i_end):
             for j in range(j_start, j_end):
-                if D[i+1, j+1] == np.inf:  # Not yet processed
-                    cost = 0.0
-                    for k in range(x.shape[1]):
-                        diff = x[i, k] - y[j, k]
-                        cost += diff * diff
-                    cost = np.sqrt(cost)
+                valid[i, j] = True
 
-                    D[i+1, j+1] = cost + min(D[i, j+1], D[i+1, j], D[i, j])
+    # Second pass: fill DP matrix in row-major order
+    # This ensures dependencies D[i-1,j], D[i,j-1], D[i-1,j-1] are computed first
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if valid[i, j]:
+                # Euclidean distance between frames
+                cost = 0.0
+                for k in range(x.shape[1]):
+                    diff = x[i-1, k] - y[j-1, k]
+                    cost += diff * diff
+                cost = np.sqrt(cost)
+
+                # DTW recurrence - only consider valid predecessors
+                D[i, j] = cost + min(D[i-1, j], D[i, j-1], D[i-1, j-1])
 
     return D[n, m] if D[n, m] != np.inf else 1e10
 
@@ -419,7 +427,9 @@ class DTWRetriever(BaseRetriever):
             if not isinstance(waveform, torch.Tensor):
                 waveform = torch.from_numpy(waveform).float()
 
-            features = self.extract_features(waveform, self.sr)
+            # Use sample's actual SR if available, otherwise fall back to self.sr
+            sample_sr = sample.get('sr', self.sr)
+            features = self.extract_features(waveform, sample_sr)
             self._gallery_sequences.append(features.numpy())
             labels_list.append(sample['target'])
             indices_list.append(sample.get('idx', len(indices_list)))
@@ -434,6 +444,11 @@ class DTWRetriever(BaseRetriever):
         """Override: DTW doesn't stack features."""
         # Do nothing - we use _gallery_sequences instead
         pass
+
+    def clear_gallery(self):
+        """Clear gallery and DTW-specific sequence storage."""
+        super().clear_gallery()
+        self._gallery_sequences = []
 
     def compute_distance(
         self,
@@ -475,7 +490,8 @@ class DTWRetriever(BaseRetriever):
         self,
         query_waveform: torch.Tensor,
         k: int = None,
-        return_distances: bool = False
+        return_distances: bool = False,
+        query_sr: int = None,
     ) -> torch.Tensor:
         """
         Retrieve similar items using DTW.
@@ -496,7 +512,8 @@ class DTWRetriever(BaseRetriever):
             query_waveform = torch.from_numpy(query_waveform).float()
 
         # Extract query features
-        query_features = self.extract_features(query_waveform, self.sr)
+        sr = query_sr if query_sr is not None else self.sr
+        query_features = self.extract_features(query_waveform, sr)
 
         # Compute distances
         distances = self.compute_distance(query_features, None)

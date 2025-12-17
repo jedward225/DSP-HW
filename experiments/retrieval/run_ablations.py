@@ -49,6 +49,7 @@ from src.dsp_core import mfcc, pre_emphasis, cmvn
 from src.retrieval.base import BaseRetriever
 from src.features.pooling import mean_std_pool
 from src.metrics.retrieval_metrics import aggregate_metrics
+from src.utils.seed import get_seed_from_config, set_seed
 
 console = Console()
 
@@ -421,6 +422,11 @@ def run_ablations(config_path: str, output_dir: Path):
     # Setup
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(output_dir)
+
+    seed = get_seed_from_config(yaml_config)
+    if seed is not None:
+        set_seed(seed, deterministic=bool(yaml_config.get('deterministic', False)))
+        logger.info(f"Random seed set to {seed}")
 
     dataset_cfg = yaml_config.get('dataset', {})
     feature_cfg = yaml_config.get('features', {})

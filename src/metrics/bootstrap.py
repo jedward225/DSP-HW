@@ -2,6 +2,12 @@
 Bootstrap confidence interval calculation for evaluation metrics.
 
 Provides robust confidence intervals for 5-fold cross-validation results.
+
+Note on Architecture Convention:
+    This module is an exception to the "only dsp_core imports librosa/scipy" rule.
+    The BCa bootstrap method imports scipy.stats for normal distribution functions.
+    This exception is documented because metrics is a utility module separate from
+    the core audio processing pipeline.
 """
 
 import numpy as np
@@ -26,8 +32,8 @@ def bootstrap_ci(
     Returns:
         Tuple of (mean, ci_lower, ci_upper)
     """
-    if random_state is not None:
-        np.random.seed(random_state)
+    # Use local RNG to avoid modifying global state
+    rng = np.random.default_rng(random_state)
 
     values = np.array(values)
     n = len(values)
@@ -36,7 +42,7 @@ def bootstrap_ci(
     bootstrap_means = np.zeros(n_bootstrap)
     for i in range(n_bootstrap):
         # Sample with replacement
-        sample_idx = np.random.randint(0, n, size=n)
+        sample_idx = rng.integers(0, n, size=n)
         bootstrap_means[i] = values[sample_idx].mean()
 
     # Compute percentiles
@@ -84,8 +90,8 @@ def bootstrap_ci_bca(
     """
     from scipy import stats
 
-    if random_state is not None:
-        np.random.seed(random_state)
+    # Use local RNG to avoid modifying global state
+    rng = np.random.default_rng(random_state)
 
     values = np.array(values)
     n = len(values)
@@ -94,11 +100,14 @@ def bootstrap_ci_bca(
     # Generate bootstrap samples
     bootstrap_means = np.zeros(n_bootstrap)
     for i in range(n_bootstrap):
-        sample_idx = np.random.randint(0, n, size=n)
+        sample_idx = rng.integers(0, n, size=n)
         bootstrap_means[i] = values[sample_idx].mean()
 
     # Bias correction factor
-    z0 = stats.norm.ppf((bootstrap_means < mean).mean())
+    # Clamp proportion to avoid inf from norm.ppf(0) or norm.ppf(1)
+    prop = (bootstrap_means < mean).mean()
+    prop = np.clip(prop, 1e-10, 1 - 1e-10)
+    z0 = stats.norm.ppf(prop)
 
     # Acceleration factor (jackknife estimate)
     jackknife_means = np.zeros(n)
@@ -136,6 +145,7 @@ def aggregate_metrics_with_ci(
     n_bootstrap: int = 1000,
     confidence: float = 0.95,
     method: str = 'percentile',
+    random_state: Optional[int] = None,
 ) -> Dict[str, Dict[str, float]]:
     """
     Aggregate metrics from multiple folds with bootstrap confidence intervals.
@@ -145,6 +155,7 @@ def aggregate_metrics_with_ci(
         n_bootstrap: Number of bootstrap samples
         confidence: Confidence level
         method: 'percentile' or 'bca'
+        random_state: Random seed for reproducibility
 
     Returns:
         Dictionary with mean, ci_lower, ci_upper for each metric
@@ -166,7 +177,7 @@ def aggregate_metrics_with_ci(
     for name in metric_names:
         values = [m[name] for m in all_metrics]
         mean, ci_lower, ci_upper = ci_func(
-            values, n_bootstrap, confidence
+            values, n_bootstrap, confidence, random_state=random_state
         )
         aggregated[name] = {
             'mean': mean,
@@ -188,6 +199,7 @@ def compute_fold_ci(
     fold_results: Dict[str, float],
     n_bootstrap: int = 1000,
     confidence: float = 0.95,
+    random_state: Optional[int] = None,
 ) -> Dict[str, str]:
     """
     Compute and format CIs for a set of fold results.
@@ -201,7 +213,7 @@ def compute_fold_ci(
         Dict with formatted CI strings
     """
     values = list(fold_results.values())
-    mean, ci_lower, ci_upper = bootstrap_ci(values, n_bootstrap, confidence)
+    mean, ci_lower, ci_upper = bootstrap_ci(values, n_bootstrap, confidence, random_state=random_state)
 
     return {
         'mean': mean,

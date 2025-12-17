@@ -91,6 +91,8 @@ class MelSpectrogramDataset(Dataset):
         mel_max = mel.max()
         if mel_max - mel_min > 1e-10:
             mel = (mel - mel_min) / (mel_max - mel_min)
+        else:
+            mel = np.zeros_like(mel)
 
         return torch.from_numpy(mel).float(), self.labels[idx]
 
@@ -247,6 +249,7 @@ def main():
 
     # Training loop
     best_retrieval_acc = 0
+    retrieval_acc = 0.0  # Initialize to avoid undefined error if epochs < 10
     history = {'train_loss': [], 'retrieval_acc': []}
 
     print(f"Starting training for {args.epochs} epochs...")
@@ -271,6 +274,9 @@ def main():
                     'retrieval_acc': retrieval_acc,
                     'config': {
                         'n_mels': 128,
+                        'n_frames': train_dataset.n_frames,
+                        'n_fft': train_dataset.n_fft,
+                        'hop_length': train_dataset.hop_length,
                         'embed_dim': args.embed_dim,
                         'proj_dim': args.proj_dim,
                     },
@@ -283,6 +289,11 @@ def main():
         history['train_loss'].append(train_loss)
         scheduler.step()
 
+    # Compute final retrieval accuracy if not computed on last epoch
+    if args.epochs % 10 != 0:
+        retrieval_acc = validate_retrieval(model, train_loader, val_loader, device)
+        print(f"Final retrieval accuracy: {retrieval_acc:.4f}")
+
     # Save final model
     checkpoint = {
         'epoch': args.epochs,
@@ -291,6 +302,9 @@ def main():
         'retrieval_acc': retrieval_acc,
         'config': {
             'n_mels': 128,
+            'n_frames': train_dataset.n_frames,
+            'n_fft': train_dataset.n_fft,
+            'hop_length': train_dataset.hop_length,
             'embed_dim': args.embed_dim,
             'proj_dim': args.proj_dim,
         },

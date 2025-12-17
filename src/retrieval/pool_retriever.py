@@ -8,10 +8,6 @@ and use vector distance metrics for retrieval.
 import torch
 import numpy as np
 from typing import Optional, Dict, List, Literal
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.retrieval.base import BaseRetriever
 from src.dsp_core import mfcc, melspectrogram, log_melspectrogram, delta, stft, power_to_db
@@ -42,6 +38,7 @@ class PoolRetriever(BaseRetriever):
         hop_length: int = 512,
         fmin: float = 0.0,
         fmax: float = None,
+        window: str = 'hann',
         # Delta parameters
         delta_width: int = 9,
         # Pooling parameters
@@ -63,6 +60,7 @@ class PoolRetriever(BaseRetriever):
             hop_length: Hop length
             fmin: Minimum frequency
             fmax: Maximum frequency
+            window: Window function type ('hann', 'hamming', 'rectangular')
             delta_width: Width for delta computation
             pool_stats: Statistics for 'statistics' pooling
         """
@@ -79,6 +77,7 @@ class PoolRetriever(BaseRetriever):
         self.hop_length = hop_length
         self.fmin = fmin
         self.fmax = fmax if fmax is not None else sr / 2
+        self.window = window
         self.delta_width = delta_width
         self.pool_stats = pool_stats or ['mean', 'std']
 
@@ -118,7 +117,8 @@ class PoolRetriever(BaseRetriever):
                 hop_length=self.hop_length,
                 n_mels=self.n_mels,
                 fmin=self.fmin,
-                fmax=self.fmax
+                fmax=self.fmax,
+                window=self.window
             )
             features = torch.from_numpy(features).float().to(self.device)
 
@@ -131,7 +131,8 @@ class PoolRetriever(BaseRetriever):
                 hop_length=self.hop_length,
                 n_mels=self.n_mels,
                 fmin=self.fmin,
-                fmax=self.fmax
+                fmax=self.fmax,
+                window=self.window
             )
             features = torch.from_numpy(features).float().to(self.device)
             # Add delta and delta-delta
@@ -150,7 +151,8 @@ class PoolRetriever(BaseRetriever):
                 hop_length=self.hop_length,
                 n_mels=self.n_mels,
                 fmin=self.fmin,
-                fmax=self.fmax
+                fmax=self.fmax,
+                window=self.window
             )
             features = torch.from_numpy(features).float().to(self.device)
 
@@ -159,7 +161,8 @@ class PoolRetriever(BaseRetriever):
             S = np.abs(stft(
                 y=waveform_np,
                 n_fft=self.n_fft,
-                hop_length=self.hop_length
+                hop_length=self.hop_length,
+                window=self.window
             ))
             S = torch.from_numpy(S).float().to(self.device)
 
@@ -247,14 +250,16 @@ class PoolRetriever(BaseRetriever):
             return 1 - correlation
 
         elif self.distance == 'mahalanobis':
-            # Mahalanobis distance: sqrt((x-μ)ᵀ Σ⁻¹ (x-μ))
-            # Compute inverse covariance matrix from gallery if not cached
             if self._inv_cov is None:
-                centered = gallery_features - gallery_features.mean(dim=0)
-                cov = torch.mm(centered.T, centered) / (gallery_features.shape[0] - 1)
-                # Add regularization for numerical stability
-                cov = cov + 1e-5 * torch.eye(cov.shape[0], device=cov.device)
-                self._inv_cov = torch.linalg.inv(cov)
+                if self._gallery_features is not None and self._gallery_features.shape[0] >= 2:
+                    self._fit_mahalanobis(self._gallery_features)
+                elif gallery_features is not None and gallery_features.shape[0] >= 2:
+                    self._fit_mahalanobis(gallery_features)
+                else:
+                    raise RuntimeError(
+                        "Mahalanobis distance requires a fitted covariance matrix. "
+                        "Call build_gallery() with at least 2 samples first."
+                    )
 
             diff = gallery_features - query_features.unsqueeze(0)
             # Mahalanobis: sqrt((x-y)ᵀ Σ⁻¹ (x-y))
@@ -269,6 +274,24 @@ class PoolRetriever(BaseRetriever):
         super().clear_gallery()
         self._inv_cov = None
 
+    def build_gallery(
+        self,
+        gallery_samples: List[Dict],
+        show_progress: bool = False
+    ):
+        super().build_gallery(gallery_samples, show_progress=show_progress)
+        if self.distance == 'mahalanobis':
+            if self._gallery_features is None or self._gallery_features.shape[0] < 2:
+                raise ValueError("Mahalanobis distance requires at least 2 gallery samples")
+            self._fit_mahalanobis(self._gallery_features)
+
+    def _fit_mahalanobis(self, features: torch.Tensor) -> None:
+        centered = features - features.mean(dim=0, keepdim=True)
+        denom = max(1, features.shape[0] - 1)
+        cov = torch.mm(centered.T, centered) / denom
+        cov = cov + 1e-5 * torch.eye(cov.shape[0], device=cov.device, dtype=cov.dtype)
+        self._inv_cov = torch.linalg.inv(cov)
+
 
 def create_method_m1(
     device: str = 'cpu',
@@ -277,6 +300,7 @@ def create_method_m1(
     n_mels: int = 128,
     n_fft: int = 2048,
     hop_length: int = 512,
+    window: str = 'hann',
     **kwargs
 ) -> PoolRetriever:
     """
@@ -295,6 +319,7 @@ def create_method_m1(
         n_mels=n_mels,
         n_fft=n_fft,
         hop_length=hop_length,
+        window=window,
         **kwargs
     )
 
@@ -306,6 +331,7 @@ def create_method_m2(
     n_mels: int = 128,
     n_fft: int = 2048,
     hop_length: int = 512,
+    window: str = 'hann',
     delta_width: int = 9,
     **kwargs
 ) -> PoolRetriever:
@@ -325,6 +351,7 @@ def create_method_m2(
         n_mels=n_mels,
         n_fft=n_fft,
         hop_length=hop_length,
+        window=window,
         delta_width=delta_width,
         **kwargs
     )
@@ -336,6 +363,7 @@ def create_method_m3(
     n_mels: int = 128,
     n_fft: int = 2048,
     hop_length: int = 512,
+    window: str = 'hann',
     **kwargs
 ) -> PoolRetriever:
     """
@@ -353,6 +381,7 @@ def create_method_m3(
         n_mels=n_mels,
         n_fft=n_fft,
         hop_length=hop_length,
+        window=window,
         **kwargs
     )
 
@@ -362,6 +391,7 @@ def create_method_m4(
     sr: int = 22050,
     n_fft: int = 2048,
     hop_length: int = 512,
+    window: str = 'hann',
     **kwargs
 ) -> PoolRetriever:
     """
@@ -378,6 +408,7 @@ def create_method_m4(
         sr=sr,
         n_fft=n_fft,
         hop_length=hop_length,
+        window=window,
         pool_stats=['mean', 'std', 'max', 'min'],
         **kwargs
     )

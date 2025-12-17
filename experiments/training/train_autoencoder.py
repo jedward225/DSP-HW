@@ -37,7 +37,7 @@ class MelSpectrogramDataset(Dataset):
         n_mels: int = 128,
         n_fft: int = 2048,
         hop_length: int = 512,
-        n_frames: int = 216,
+        n_frames: int = 256,
     ):
         """
         Initialize dataset.
@@ -106,6 +106,8 @@ class MelSpectrogramDataset(Dataset):
         mel_max = mel.max()
         if mel_max - mel_min > 1e-10:
             mel = (mel - mel_min) / (mel_max - mel_min)
+        else:
+            mel = np.zeros_like(mel)
 
         return torch.from_numpy(mel).float(), self.labels[idx]
 
@@ -214,7 +216,7 @@ def main():
     # Create model
     model = MelAutoencoder(
         n_mels=128,
-        n_frames=216,
+        n_frames=256,
         latent_dim=args.latent_dim,
     ).to(device)
 
@@ -251,7 +253,7 @@ def main():
                 'val_loss': val_loss,
                 'config': {
                     'n_mels': 128,
-                    'n_frames': 216,
+                    'n_frames': 256,
                     'latent_dim': args.latent_dim,
                 },
             }
@@ -266,7 +268,7 @@ def main():
         'val_loss': val_loss,
         'config': {
             'n_mels': 128,
-            'n_frames': 216,
+            'n_frames': 256,
             'latent_dim': args.latent_dim,
         },
     }

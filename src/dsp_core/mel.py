@@ -175,12 +175,19 @@ def log_melspectrogram(
         n_mels: Number of Mel bands
         fmin: Minimum frequency
         fmax: Maximum frequency
-        ref: Reference power for dB conversion
+        ref: Reference power for dB conversion. Can be:
+            - float (default: 1.0): Fixed reference, features are amplitude-sensitive
+            - 'max': Use per-clip max for amplitude-invariant features
         amin: Minimum amplitude threshold
         top_db: Maximum dynamic range
 
     Returns:
         Log-mel spectrogram in dB, shape (n_mels, n_frames)
+
+    Note:
+        Using ref=1.0 (default) produces amplitude-sensitive features.
+        For amplitude-invariant features, use ref='max' which normalizes
+        each clip by its maximum value.
     """
     mel_spec = melspectrogram(
         y=y,
@@ -194,7 +201,16 @@ def log_melspectrogram(
         fmax=fmax
     )
 
-    return librosa.power_to_db(mel_spec, ref=ref, amin=amin, top_db=top_db)
+    # Handle ref='max' for per-clip normalization
+    if ref == 'max':
+        ref_value = np.max(mel_spec)
+        # Guard against silent clips (all zeros) which would cause division by zero
+        if ref_value == 0:
+            ref_value = 1.0  # Use 1.0 as reference for silent clips
+    else:
+        ref_value = ref
+
+    return librosa.power_to_db(mel_spec, ref=ref_value, amin=amin, top_db=top_db)
 
 
 def pcen(

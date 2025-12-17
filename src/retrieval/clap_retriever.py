@@ -3,6 +3,12 @@ CLAP-based audio retrieval method (M8).
 
 Uses pretrained CLAP (Contrastive Language-Audio Pretraining) model
 for audio embeddings with cosine distance.
+
+Note on Architecture Convention:
+    This module is an exception to the "only dsp_core imports librosa/scipy" rule.
+    CLAP requires resampling to 48kHz and uses librosa for this purpose.
+    This exception is documented because deep learning retrievers have specialized
+    preprocessing requirements that differ from the traditional DSP pipeline.
 """
 
 import torch
@@ -11,9 +17,7 @@ from typing import Optional, List, Dict
 from pathlib import Path
 import sys
 
-# Add project root to path
 project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from src.retrieval.base import BaseRetriever
 
@@ -34,8 +38,8 @@ class CLAPRetriever(BaseRetriever):
     def __init__(
         self,
         name: str = "M8_CLAP",
-        device: str = 'cuda',
-        sr: int = 48000,
+        device: Optional[str] = None,
+        sr: int = 22050,
         checkpoint_path: str = None,
         enable_fusion: bool = False,
         amodel: str = 'HTSAT-base',
@@ -46,11 +50,14 @@ class CLAPRetriever(BaseRetriever):
         Args:
             name: Method name
             device: Device for computation ('cpu' or 'cuda')
-            sr: Sample rate (internally resamples to 48kHz)
+            sr: Input sample rate (audio will be resampled to 48kHz internally)
             checkpoint_path: Path to CLAP checkpoint (required)
             enable_fusion: Enable fusion CLAP model
             amodel: Audio model architecture ('HTSAT-tiny' or 'HTSAT-base')
         """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
         super().__init__(name=name, device=device, sr=sr)
 
         if checkpoint_path is None:
@@ -62,6 +69,9 @@ class CLAPRetriever(BaseRetriever):
         self.amodel = amodel
         self.clap_sr = 48000  # CLAP requires 48kHz
 
+        if not Path(self.checkpoint_path).exists():
+            raise FileNotFoundError(f"CLAP checkpoint not found: {self.checkpoint_path}")
+
         # Load CLAP model
         self._load_clap_model()
 
@@ -69,6 +79,8 @@ class CLAPRetriever(BaseRetriever):
         """Load the CLAP model from checkpoint."""
         # Add CLAP source to path
         clap_src_path = project_root / 'CLAP' / 'src'
+        if not clap_src_path.exists():
+            raise FileNotFoundError(f"CLAP source not found at: {clap_src_path}")
         if str(clap_src_path) not in sys.path:
             sys.path.insert(0, str(clap_src_path))
 
@@ -171,7 +183,7 @@ class CLAPRetriever(BaseRetriever):
 
 
 def create_method_m8(
-    device: str = 'cuda',
+    device: Optional[str] = None,
     checkpoint_path: str = None,
     enable_fusion: bool = False,
     amodel: str = 'HTSAT-base',
@@ -195,7 +207,7 @@ def create_method_m8(
     return CLAPRetriever(
         name="M8_CLAP",
         device=device,
-        sr=48000,  # CLAP requires 48kHz
+        sr=22050,  # Input SR from dataset; internally resampled to 48kHz
         checkpoint_path=checkpoint_path,
         enable_fusion=enable_fusion,
         amodel=amodel,

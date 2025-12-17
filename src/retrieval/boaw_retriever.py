@@ -8,10 +8,6 @@ and represents each audio as a histogram of codeword occurrences.
 import torch
 import numpy as np
 from typing import Optional, List, Tuple
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.retrieval.base import BaseRetriever
 from src.dsp_core import mfcc
@@ -71,7 +67,8 @@ class KMeansClusterer:
                     new_centers[k] = X[mask].mean(dim=0)
                 else:
                     # Empty cluster - reinitialize randomly
-                    new_centers[k] = X[torch.randint(n_samples, (1,))]
+                    # Use .item() to get scalar index (avoids shape mismatch)
+                    new_centers[k] = X[torch.randint(n_samples, (1,)).item()]
 
             # Check convergence
             center_shift = ((new_centers - centers) ** 2).sum()
@@ -117,9 +114,12 @@ class KMeansClusterer:
 
             # Sample proportional to squared distance
             probs = min_distances ** 2
-            probs = probs / probs.sum()
-
-            idx = torch.multinomial(probs, 1).item()
+            total = probs.sum()
+            if total <= 0 or not torch.isfinite(total):
+                idx = torch.randint(n_samples, (1,)).item()
+            else:
+                probs = probs / total
+                idx = torch.multinomial(probs, 1).item()
             centers.append(X[idx])
 
         return torch.stack(centers)
@@ -154,6 +154,7 @@ class BoAWRetriever(BaseRetriever):
         n_clusters: int = 128,
         normalize_hist: bool = True,
         distance: str = 'chi_squared',  # 'chi_squared', 'euclidean', 'cosine'
+        random_state: int = 42,
     ):
         """
         Initialize BoAW retriever.
@@ -171,6 +172,7 @@ class BoAWRetriever(BaseRetriever):
             n_clusters: Number of codewords in codebook
             normalize_hist: If True, normalize histograms to sum to 1
             distance: Distance metric for histograms
+            random_state: Random seed for reproducibility
         """
         super().__init__(name=name, device=device, sr=sr)
 
@@ -183,6 +185,7 @@ class BoAWRetriever(BaseRetriever):
         self.n_clusters = n_clusters
         self.normalize_hist = normalize_hist
         self.distance_type = distance
+        self.random_state = random_state
 
         # Codebook (learned from training data)
         self.codebook: Optional[KMeansClusterer] = None
@@ -195,6 +198,12 @@ class BoAWRetriever(BaseRetriever):
     ) -> np.ndarray:
         """Extract frame-level MFCC features."""
         sr = sr or self.sr
+
+        fmax = self.fmax
+        if fmax is None:
+            fmax = sr / 2
+        else:
+            fmax = min(float(fmax), sr / 2)
 
         if isinstance(waveform, torch.Tensor):
             waveform_np = waveform.cpu().numpy()
@@ -209,7 +218,7 @@ class BoAWRetriever(BaseRetriever):
             hop_length=self.hop_length,
             n_mels=self.n_mels,
             fmin=self.fmin,
-            fmax=self.fmax
+            fmax=fmax
         )
 
         # Transpose to (n_frames, n_features)
@@ -238,21 +247,24 @@ class BoAWRetriever(BaseRetriever):
 
         for sample in iterator:
             waveform = sample['waveform']
-            frames = self._extract_frame_features(waveform, self.sr)
+            sample_sr = sample.get('sr', self.sr)
+            frames = self._extract_frame_features(waveform, sample_sr)
             all_frames.append(frames)
 
         # Concatenate all frames
         all_frames = np.vstack(all_frames)
 
-        # Subsample if too many frames
+        # Subsample if too many frames (use seed for reproducibility)
         if len(all_frames) > max_frames:
-            indices = np.random.choice(len(all_frames), max_frames, replace=False)
+            rng = np.random.default_rng(self.random_state)
+            indices = rng.choice(len(all_frames), max_frames, replace=False)
             all_frames = all_frames[indices]
 
         # Fit k-means
         frames_tensor = torch.from_numpy(all_frames).float().to(self.device)
         self.codebook = KMeansClusterer(
             n_clusters=self.n_clusters,
+            random_state=self.random_state,
             device=self.device
         )
         self.codebook.fit(frames_tensor)
@@ -285,10 +297,10 @@ class BoAWRetriever(BaseRetriever):
         # Assign frames to codewords
         assignments = self.codebook.predict(frames_tensor)
 
-        # Build histogram
-        histogram = torch.zeros(self.n_clusters, device=self.device)
-        for idx in assignments:
-            histogram[idx] += 1
+        # Build histogram using vectorized bincount (much faster than Python loop)
+        histogram = torch.bincount(
+            assignments, minlength=self.n_clusters
+        ).float().to(self.device)
 
         # Normalize
         if self.normalize_hist:
@@ -368,12 +380,21 @@ class BoAWRetriever(BaseRetriever):
             # Normalize to probability distributions
             query_np = query_np / (query_np.sum() + 1e-10)
 
-            distances = []
-            # Cost matrix: distance between bins (for histograms, use identity or 1-I)
-            n_bins = query_np.shape[0]
-            # Use uniform cost between different bins
-            M = np.ones((n_bins, n_bins)) - np.eye(n_bins)
+            # Build cost matrix from pairwise distances between codebook centers
+            # This captures the semantic similarity between codewords
+            if self.codebook is not None and self.codebook.cluster_centers_ is not None:
+                centers = self.codebook.cluster_centers_.cpu().numpy()
+                # Pairwise Euclidean distance between cluster centers
+                M = np.sqrt(((centers[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2))
+                # Normalize cost matrix to [0, 1] range for numerical stability
+                if M.max() > 0:
+                    M = M / M.max()
+            else:
+                # Fallback to uniform cost if codebook not available
+                n_bins = query_np.shape[0]
+                M = np.ones((n_bins, n_bins)) - np.eye(n_bins)
 
+            distances = []
             for g in gallery_np:
                 g_norm = g / (g.sum() + 1e-10)
                 # Compute EMD (Wasserstein-1 distance)
@@ -400,6 +421,12 @@ class BoAWRetriever(BaseRetriever):
 
         # Now build gallery using parent method
         super().build_gallery(gallery_samples, show_progress=show_progress)
+
+    def clear_gallery(self):
+        """Clear gallery and reset codebook for proper cross-validation."""
+        super().clear_gallery()
+        self.codebook = None
+        self._codebook_fitted = False
 
 
 def create_method_m6(

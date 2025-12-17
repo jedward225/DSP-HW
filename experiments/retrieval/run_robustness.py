@@ -51,6 +51,7 @@ from src.data.esc50 import ESC50Dataset
 from src.retrieval import create_method_m1, create_method_m2, create_method_m3
 from src.utils.augmentation import AudioAugmenter
 from src.metrics.retrieval_metrics import aggregate_metrics
+from src.utils.seed import get_seed_from_config, set_seed
 
 console = Console()
 
@@ -179,7 +180,7 @@ def evaluate_robustness(
         metrics = retriever.evaluate_query(perturbed_query)
         all_metrics.append(metrics)
 
-        if progress and task_id:
+        if progress is not None and task_id is not None:
             progress.update(task_id, advance=1)
 
     # Aggregate
@@ -318,6 +319,11 @@ def run_robustness_experiments(config_path: str, output_dir: Path):
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(output_dir)
 
+    seed = get_seed_from_config(yaml_config)
+    if seed is not None:
+        set_seed(seed, deterministic=bool(yaml_config.get('deterministic', False)))
+        logger.info(f"Random seed set to {seed}")
+
     dataset_cfg = yaml_config.get('dataset', {})
     device = yaml_config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
     sr = dataset_cfg.get('sr', 22050)
@@ -363,6 +369,10 @@ def run_robustness_experiments(config_path: str, output_dir: Path):
         # Pitch (skip if librosa pitch_shift is slow)
         PerturbationConfig("pitch_-1", "pitch", -1, "Pitch shifted down by 1 semitone"),
         PerturbationConfig("pitch_+1", "pitch", 1, "Pitch shifted up by 1 semitone"),
+
+        # Time shift
+        PerturbationConfig("time_shift_0.1", "time_shift", 0.1, "Time shifted by 10%"),
+        PerturbationConfig("time_shift_0.2", "time_shift", 0.2, "Time shifted by 20%"),
     ]
 
     console.print(f"\n[bold]Testing {len(perturbations)} perturbations...[/bold]")

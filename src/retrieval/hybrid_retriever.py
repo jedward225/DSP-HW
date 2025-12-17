@@ -8,12 +8,6 @@ through late fusion for robust retrieval.
 import torch
 import numpy as np
 from typing import Optional, List, Dict
-from pathlib import Path
-import sys
-
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from src.retrieval.base import BaseRetriever
 from src.retrieval.clap_retriever import CLAPRetriever
@@ -38,7 +32,7 @@ class HybridRetriever(BaseRetriever):
     def __init__(
         self,
         name: str = "M9_Hybrid",
-        device: str = 'cuda',
+        device: Optional[str] = None,
         sr: int = 22050,
         clap_weight: float = 0.7,
         mfcc_weight: float = 0.3,
@@ -63,6 +57,9 @@ class HybridRetriever(BaseRetriever):
             n_mfcc: Number of MFCC coefficients
             n_mels: Number of mel filter banks
         """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
         super().__init__(name=name, device=device, sr=sr)
 
         # Normalize weights
@@ -71,10 +68,12 @@ class HybridRetriever(BaseRetriever):
         self.mfcc_weight = mfcc_weight / total
 
         # Create CLAP retriever
+        # Note: We pass sr=sr (dataset SR, e.g. 22050), and CLAPRetriever
+        # will handle resampling to its internal 48kHz requirement
         self.clap_retriever = CLAPRetriever(
             name="Hybrid_CLAP",
             device=device,
-            sr=48000,
+            sr=sr,  # Pass dataset SR, let CLAP resample internally
             checkpoint_path=clap_checkpoint,
             enable_fusion=enable_fusion,
             amodel=clap_amodel,
@@ -126,7 +125,8 @@ class HybridRetriever(BaseRetriever):
         self,
         query_waveform: torch.Tensor,
         k: int = None,
-        return_distances: bool = False
+        return_distances: bool = False,
+        query_sr: int = None,
     ) -> torch.Tensor:
         """
         Retrieve using weighted late fusion of CLAP and MFCC distances.
@@ -139,15 +139,32 @@ class HybridRetriever(BaseRetriever):
         Returns:
             Indices of top-k results (and optionally distances)
         """
-        # Get CLAP distances
-        _, clap_distances = self.clap_retriever.retrieve(
-            query_waveform, k=None, return_distances=True
-        )
+        if self._gallery_labels is None:
+            raise RuntimeError("Gallery not built. Call build_gallery() first.")
 
-        # Get MFCC distances
-        _, mfcc_distances = self.mfcc_retriever.retrieve(
-            query_waveform, k=None, return_distances=True
+        n_gallery = len(self._gallery_labels)
+        fusion_device = torch.device(self.device)
+        fusion_dtype = torch.float32
+
+        # Get CLAP sorted indices and distances
+        clap_sorted_indices, clap_sorted_distances = self.clap_retriever.retrieve(
+            query_waveform, k=None, return_distances=True, query_sr=query_sr
         )
+        clap_sorted_indices = clap_sorted_indices.to(fusion_device)
+        clap_sorted_distances = clap_sorted_distances.to(device=fusion_device, dtype=fusion_dtype)
+        # Reconstruct full distance array indexed by gallery position
+        clap_distances = torch.zeros(n_gallery, dtype=fusion_dtype, device=fusion_device)
+        clap_distances[clap_sorted_indices] = clap_sorted_distances
+
+        # Get MFCC sorted indices and distances
+        mfcc_sorted_indices, mfcc_sorted_distances = self.mfcc_retriever.retrieve(
+            query_waveform, k=None, return_distances=True, query_sr=query_sr
+        )
+        mfcc_sorted_indices = mfcc_sorted_indices.to(fusion_device)
+        mfcc_sorted_distances = mfcc_sorted_distances.to(device=fusion_device, dtype=fusion_dtype)
+        # Reconstruct full distance array indexed by gallery position
+        mfcc_distances = torch.zeros(n_gallery, dtype=fusion_dtype, device=fusion_device)
+        mfcc_distances[mfcc_sorted_indices] = mfcc_sorted_distances
 
         # Normalize distances to [0, 1]
         def normalize(dist):
@@ -198,7 +215,7 @@ class HybridRetriever(BaseRetriever):
 
 
 def create_method_m9(
-    device: str = 'cuda',
+    device: Optional[str] = None,
     sr: int = 22050,
     clap_weight: float = 0.7,
     mfcc_weight: float = 0.3,

@@ -1,6 +1,10 @@
 *__pycache__*
+
+# Experiment outputs / checkpoints
+/models/
+
+# External
 beats/
-CLAP/
 laion_clap/
-models/
 unilm/
+CLAP/

@@ -56,6 +56,7 @@ from src.retrieval import (
     create_method_m6,
     create_method_m7,
 )
+from src.utils.seed import get_seed_from_config, set_seed
 
 console = Console()
 
@@ -186,16 +187,22 @@ def measure_method(
     num_samples: int = 100,
 ) -> EfficiencyMetrics:
     """Measure all efficiency metrics for a method."""
-    # Feature extraction time
-    feat_time_ms, feat_std = measure_feature_extraction(method, gallery_samples, num_samples)
-
-    # Gallery build time
+    # Gallery build time FIRST (BoAW needs fitted codebook before feature extraction)
     build_time = measure_gallery_build(method, gallery_samples)
+
+    # Feature extraction time (now safe to call after gallery is built)
+    feat_time_ms, feat_std = measure_feature_extraction(method, gallery_samples, num_samples)
 
     # Get feature dimension and memory
     if method._gallery_features is not None:
         feature_dim = method._gallery_features.shape[1]
         gallery_memory = get_tensor_memory_mb(method._gallery_features)
+    elif hasattr(method, '_gallery_sequences') and method._gallery_sequences is not None:
+        # DTW stores sequences in _gallery_sequences, not _gallery_features
+        feature_dim = method._gallery_sequences[0].shape[1] if method._gallery_sequences else 0
+        # Compute memory for DTW: sum of all sequence sizes
+        total_elements = sum(s.size for s in method._gallery_sequences)
+        gallery_memory = total_elements * 4 / (1024 * 1024)  # float32 in MB
     else:
         feature_dim = 0
         gallery_memory = 0.0
@@ -231,10 +238,13 @@ def create_methods(config: Dict, device: str, sr: int) -> Dict:
         'n_mels': feat_cfg.get('n_mels', 128),
         'n_fft': feat_cfg.get('n_fft', 2048),
         'hop_length': feat_cfg.get('hop_length', 512),
+        'fmin': feat_cfg.get('fmin', 0.0),
+        'fmax': feat_cfg.get('fmax', None),
+        'window': feat_cfg.get('window', 'hann'),
     }
 
     methods['M1_MFCC_Pool_Cos'] = create_method_m1(**common_params)
-    methods['M2_MFCC_Delta_Pool'] = create_method_m2(**common_params, delta_width=9)
+    methods['M2_MFCC_Delta_Pool'] = create_method_m2(**common_params, delta_width=feat_cfg.get('delta_width', 9))
     methods['M3_LogMel_Pool'] = create_method_m3(**common_params)
     methods['M4_Spectral_Stat'] = create_method_m4(**common_params)
 
@@ -247,6 +257,8 @@ def create_methods(config: Dict, device: str, sr: int) -> Dict:
         n_mels=dtw_cfg.get('n_mels', 64),
         n_fft=feat_cfg.get('n_fft', 2048),
         hop_length=feat_cfg.get('hop_length', 512),
+        sakoe_chiba_radius=dtw_cfg.get('sakoe_chiba_radius', -1),
+        use_delta=dtw_cfg.get('use_delta', False),
     )
 
     boaw_cfg = config.get('boaw', {})
@@ -321,6 +333,11 @@ def run_efficiency_analysis(config_path: str, output_dir: Path):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(output_dir)
+
+    seed = get_seed_from_config(yaml_config)
+    if seed is not None:
+        set_seed(seed, deterministic=bool(yaml_config.get('deterministic', False)))
+        logger.info(f"Random seed set to {seed}")
 
     dataset_cfg = yaml_config.get('dataset', {})
     device = yaml_config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')

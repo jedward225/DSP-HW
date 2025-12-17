@@ -8,10 +8,6 @@ and combines them through late fusion.
 import torch
 import numpy as np
 from typing import Optional, List, Tuple, Dict
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.retrieval.base import BaseRetriever
 from src.retrieval.pool_retriever import PoolRetriever
@@ -34,11 +30,11 @@ class MultiResRetriever(BaseRetriever):
         device: str = 'cpu',
         sr: int = 22050,
         # Short window parameters
-        short_n_fft: int = 1024,  # ~23ms at 44100Hz, ~46ms at 22050Hz
-        short_hop_length: int = 256,
+        short_n_fft: int = 551,
+        short_hop_length: int = 220,
         # Long window parameters
-        long_n_fft: int = 4096,  # ~93ms at 44100Hz, ~186ms at 22050Hz
-        long_hop_length: int = 1024,
+        long_n_fft: int = 1764,
+        long_hop_length: int = 441,
         # Feature parameters
         n_mfcc: int = 20,
         n_mels: int = 128,
@@ -201,7 +197,9 @@ class MultiResRetriever(BaseRetriever):
                 waveform = torch.from_numpy(waveform).float()
             waveform = waveform.to(self.device)
 
-            short_feat, long_feat = self.extract_features_separate(waveform, self.sr)
+            # Use sample's actual SR if available, otherwise fall back to self.sr
+            sample_sr = sample.get('sr', self.sr)
+            short_feat, long_feat = self.extract_features_separate(waveform, sample_sr)
             short_features_list.append(short_feat)
             long_features_list.append(long_feat)
             labels_list.append(sample['target'])
@@ -215,6 +213,12 @@ class MultiResRetriever(BaseRetriever):
 
         # Combined features for compatibility
         self._gallery_features = torch.cat([self._short_features, self._long_features], dim=1)
+
+    def clear_gallery(self):
+        """Clear gallery and multi-resolution specific feature storage."""
+        super().clear_gallery()
+        self._short_features = None
+        self._long_features = None
 
     def compute_distance(
         self,
@@ -264,7 +268,8 @@ class MultiResRetriever(BaseRetriever):
         self,
         query_waveform: torch.Tensor,
         k: int = None,
-        return_distances: bool = False
+        return_distances: bool = False,
+        query_sr: int = None,
     ) -> torch.Tensor:
         """Retrieve with multi-resolution features."""
         if self._short_features is None:
@@ -275,7 +280,8 @@ class MultiResRetriever(BaseRetriever):
         query_waveform = query_waveform.to(self.device)
 
         # Extract combined features
-        query_features = self.extract_features(query_waveform, self.sr)
+        sr = query_sr if query_sr is not None else self.sr
+        query_features = self.extract_features(query_waveform, sr)
 
         # Compute fused distances
         distances = self.compute_distance(query_features, self._gallery_features)
@@ -295,10 +301,10 @@ class MultiResRetriever(BaseRetriever):
 def create_method_m7(
     device: str = 'cpu',
     sr: int = 22050,
-    short_n_fft: int = 1024,
-    short_hop_length: int = 256,
-    long_n_fft: int = 4096,
-    long_hop_length: int = 1024,
+    short_n_fft: int = 551,
+    short_hop_length: int = 220,
+    long_n_fft: int = 1764,
+    long_hop_length: int = 441,
     n_mfcc: int = 20,
     n_mels: int = 128,
     fusion_weights: Tuple[float, float] = (0.5, 0.5),

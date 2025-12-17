@@ -48,6 +48,7 @@ from rich import box
 from src.data.esc50 import ESC50Dataset
 from src.retrieval import create_method_m1, create_method_m2, create_method_m3
 from src.metrics.retrieval_metrics import aggregate_metrics
+from src.utils.seed import get_seed_from_config, set_seed
 
 console = Console()
 
@@ -111,9 +112,26 @@ def setup_logging(output_dir: Path) -> logging.Logger:
     return logging.getLogger('grid_search')
 
 
-def create_retriever(config: GridSearchConfig, device: str, sr: int):
-    """Create a retriever with specified configuration."""
-    return create_method_m1(
+def create_retriever(config: GridSearchConfig, device: str, sr: int, base_method: str = "M1"):
+    """Create a retriever with specified configuration.
+
+    Args:
+        config: Grid search configuration
+        device: Computation device
+        sr: Sample rate
+        base_method: Which method to use ("M1", "M2", "M3")
+    """
+    method_factories = {
+        "M1": create_method_m1,
+        "M2": create_method_m2,
+        "M3": create_method_m3,
+    }
+
+    if base_method not in method_factories:
+        raise ValueError(f"Unknown base_method: {base_method}. Supported: {list(method_factories.keys())}")
+
+    factory = method_factories[base_method]
+    return factory(
         device=device,
         sr=sr,
         n_mfcc=config.n_mfcc,
@@ -122,6 +140,7 @@ def create_retriever(config: GridSearchConfig, device: str, sr: int):
         hop_length=config.hop_length,
         fmin=config.fmin,
         fmax=config.fmax,
+        window=config.window,
     )
 
 
@@ -131,6 +150,7 @@ def evaluate_config(
     folds: List[int],
     device: str,
     sr: int,
+    base_method: str = "M1",
     progress: Optional[Progress] = None,
     task_id: Optional[int] = None,
 ) -> GridSearchResult:
@@ -140,7 +160,7 @@ def evaluate_config(
 
     for fold in folds:
         # Create fresh retriever
-        retriever = create_retriever(config, device, sr)
+        retriever = create_retriever(config, device, sr, base_method=base_method)
 
         # Get query/gallery split
         query_samples, gallery_samples = dataset.get_query_gallery_split(fold)
@@ -153,7 +173,7 @@ def evaluate_config(
         for query in query_samples:
             metrics = retriever.evaluate_query(query)
             query_metrics.append(metrics)
-            if progress and task_id:
+            if progress is not None and task_id is not None:
                 progress.update(task_id, advance=1)
 
         # Aggregate fold metrics
@@ -188,6 +208,7 @@ def run_step1(
     """
     step1_cfg = yaml_config['step1']
     eval_cfg = yaml_config['evaluation']
+    base_method = yaml_config.get('base_method', 'M1')
     primary_metric = eval_cfg['primary_metric']
 
     frame_lengths_ms = step1_cfg['frame_lengths_ms']
@@ -239,7 +260,7 @@ def run_step1(
         overall = progress.add_task("[cyan]Step 1 Progress", total=len(configs) * queries_per_config)
 
         for config in configs:
-            result = evaluate_config(config, dataset, folds, device, sr, progress, overall)
+            result = evaluate_config(config, dataset, folds, device, sr, base_method, progress, overall)
             results.append(result)
             logger.info(f"  Config n_fft={config.n_fft}, hop={config.hop_length}: {primary_metric}={result.metrics.get(primary_metric, 0):.4f}")
 
@@ -300,6 +321,7 @@ def run_step2(
     """
     step2_cfg = yaml_config['step2']
     eval_cfg = yaml_config['evaluation']
+    base_method = yaml_config.get('base_method', 'M1')
     primary_metric = eval_cfg['primary_metric']
 
     n_mels_list = step2_cfg['n_mels']
@@ -345,7 +367,7 @@ def run_step2(
         overall = progress.add_task("[cyan]Step 2 Progress", total=len(configs) * queries_per_config)
 
         for config in configs:
-            result = evaluate_config(config, dataset, folds, device, sr, progress, overall)
+            result = evaluate_config(config, dataset, folds, device, sr, base_method, progress, overall)
             results.append(result)
             logger.info(f"  Config n_mels={config.n_mels}, n_mfcc={config.n_mfcc}: {primary_metric}={result.metrics.get(primary_metric, 0):.4f}")
 
@@ -406,6 +428,7 @@ def run_step3(
     """
     step3_cfg = yaml_config['step3']
     eval_cfg = yaml_config['evaluation']
+    base_method = yaml_config.get('base_method', 'M1')
     primary_metric = eval_cfg['primary_metric']
 
     windows = step3_cfg['windows']
@@ -446,7 +469,7 @@ def run_step3(
         overall = progress.add_task("[cyan]Step 3 Progress", total=len(configs) * queries_per_config)
 
         for config in configs:
-            result = evaluate_config(config, dataset, folds, device, sr, progress, overall)
+            result = evaluate_config(config, dataset, folds, device, sr, base_method, progress, overall)
             results.append(result)
             logger.info(f"  Window={config.window}: {primary_metric}={result.metrics.get(primary_metric, 0):.4f}")
 
@@ -499,6 +522,7 @@ def run_step4(
     """
     step4_cfg = yaml_config.get('step4', {})
     eval_cfg = yaml_config['evaluation']
+    base_method = yaml_config.get('base_method', 'M1')
     primary_metric = eval_cfg['primary_metric']
 
     if not step4_cfg.get('enabled', False):
@@ -545,7 +569,7 @@ def run_step4(
         overall = progress.add_task("[cyan]Step 4 Progress", total=len(configs) * queries_per_config)
 
         for config in configs:
-            result = evaluate_config(config, dataset, folds, device, sr, progress, overall)
+            result = evaluate_config(config, dataset, folds, device, sr, base_method, progress, overall)
             results.append(result)
             fmax_str = str(config.fmax) if config.fmax else "sr/2"
             logger.info(f"  fmin={config.fmin}, fmax={fmax_str}: {primary_metric}={result.metrics.get(primary_metric, 0):.4f}")
@@ -616,6 +640,11 @@ def run_grid_search(config_path: str, output_dir: Path):
     # Setup output
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(output_dir)
+
+    seed = get_seed_from_config(yaml_config)
+    if seed is not None:
+        set_seed(seed, deterministic=bool(yaml_config.get('deterministic', False)))
+        logger.info(f"Random seed set to {seed}")
 
     # Get settings
     dataset_cfg = yaml_config.get('dataset', {})

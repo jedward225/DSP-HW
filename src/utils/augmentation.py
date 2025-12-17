@@ -6,20 +6,25 @@ Provides functions for:
 - Volume scaling
 - Speed perturbation
 - Pitch shifting
+
+Note on Architecture Convention:
+    This module is an exception to the "only dsp_core imports librosa/scipy" rule.
+    Augmentation functions may import scipy.signal directly for efficiency and
+    pitch_shift imports from dsp_core for consistency. This exception is documented
+    because augmentation is a utility module, not part of the core feature extraction
+    pipeline where the convention is most important.
 """
 
 import numpy as np
 from typing import Optional, Tuple
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 def add_noise(
     y: np.ndarray,
     snr_db: float,
-    noise_type: str = 'gaussian'
+    noise_type: str = 'gaussian',
+    clip: bool = True,
+    clip_range: tuple = (-1.0, 1.0)
 ) -> np.ndarray:
     """
     Add noise to audio signal at specified SNR.
@@ -28,6 +33,8 @@ def add_noise(
         y: Audio signal
         snr_db: Target signal-to-noise ratio in dB
         noise_type: Type of noise ('gaussian', 'uniform')
+        clip: If True, clip output to clip_range to prevent distortion
+        clip_range: Min/max values for clipping (default: [-1, 1])
 
     Returns:
         Noisy audio signal
@@ -50,12 +57,19 @@ def add_noise(
     else:
         raise ValueError(f"Unknown noise type: {noise_type}")
 
-    return y + noise
+    result = y + noise
+
+    if clip:
+        result = np.clip(result, clip_range[0], clip_range[1])
+
+    return result
 
 
 def scale_volume(
     y: np.ndarray,
-    gain_db: float
+    gain_db: float,
+    clip: bool = True,
+    clip_range: tuple = (-1.0, 1.0)
 ) -> np.ndarray:
     """
     Scale audio volume by specified gain.
@@ -63,6 +77,8 @@ def scale_volume(
     Args:
         y: Audio signal
         gain_db: Gain in decibels (positive = louder, negative = quieter)
+        clip: If True, clip output to clip_range to prevent distortion
+        clip_range: Min/max values for clipping (default: [-1, 1])
 
     Returns:
         Volume-scaled audio signal
@@ -70,7 +86,12 @@ def scale_volume(
     # Convert dB to linear scale
     # gain_linear = 10^(gain_db/20)
     gain_linear = 10 ** (gain_db / 20)
-    return y * gain_linear
+    result = y * gain_linear
+
+    if clip:
+        result = np.clip(result, clip_range[0], clip_range[1])
+
+    return result
 
 
 def time_shift(

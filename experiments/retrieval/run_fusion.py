@@ -53,6 +53,7 @@ from src.retrieval import (
     create_rank_fusion,
 )
 from src.metrics.retrieval_metrics import aggregate_metrics
+from src.utils.seed import get_seed_from_config, set_seed
 
 console = Console()
 
@@ -351,6 +352,11 @@ def run_fusion_experiments(config_path: str, output_dir: Path):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(output_dir)
+
+    seed = get_seed_from_config(yaml_config)
+    if seed is not None:
+        set_seed(seed, deterministic=bool(yaml_config.get('deterministic', False)))
+        logger.info(f"Random seed set to {seed}")
 
     dataset_cfg = yaml_config.get('dataset', {})
     device = yaml_config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')

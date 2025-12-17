@@ -45,6 +45,14 @@ def global_std_pool(
     Returns:
         Pooled features
     """
+    # Guard against 1-frame input which causes NaN with unbiased=True
+    n_frames = features.shape[dim]
+    if n_frames <= 1 and unbiased:
+        # For single frame, return zeros (no variance)
+        shape = list(features.shape)
+        if not keepdim:
+            shape.pop(dim)
+        return torch.zeros(shape, dtype=features.dtype, device=features.device)
     return torch.std(features, dim=dim, keepdim=keepdim, unbiased=unbiased)
 
 
@@ -212,6 +220,14 @@ def temporal_pyramid_pool(
     results = []
 
     for n_segments in levels:
+        # Skip levels that would create empty segments
+        if n_frames < n_segments:
+            # Fall back to global pooling repeated n_segments times
+            global_mean = global_mean_pool(features, dim=dim)
+            for _ in range(n_segments):
+                results.append(global_mean)
+            continue
+
         segment_size = n_frames // n_segments
         segment_results = []
 

@@ -36,10 +36,10 @@ boaw:
 
 # Multi-resolution settings
 multires:
-  short_n_fft: 1024
-  short_hop_length: 256
-  long_n_fft: 4096
-  long_hop_length: 1024
+  short_n_fft: 551
+  short_hop_length: 220
+  long_n_fft: 1764
+  long_hop_length: 441
   fusion_weights: [0.5, 0.5]
 
 # Methods to run (set to false to skip)

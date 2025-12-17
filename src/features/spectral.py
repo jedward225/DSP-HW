@@ -13,7 +13,7 @@ from typing import Union, Optional, Dict
 def spectral_centroid(
     S: torch.Tensor,
     freqs: torch.Tensor,
-    dim: int = -1
+    dim: int = -2
 ) -> torch.Tensor:
     """
     Compute the spectral centroid (center of mass of the spectrum).

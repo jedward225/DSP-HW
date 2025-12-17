@@ -54,7 +54,9 @@ from src.retrieval import (
     create_method_m7,
 )
 from src.metrics.retrieval_metrics import aggregate_metrics
+from src.metrics.bootstrap import aggregate_metrics_with_ci
 from src.utils.logging import ExperimentLogger
+from src.utils.seed import get_seed_from_config, set_seed
 
 # Initialize rich console
 console = Console()
@@ -93,6 +95,9 @@ def create_methods(config: Dict, device: str, sr: int) -> Dict:
         'n_mels': feat_cfg.get('n_mels', 128),
         'n_fft': feat_cfg.get('n_fft', 2048),
         'hop_length': feat_cfg.get('hop_length', 512),
+        'fmin': feat_cfg.get('fmin', 0.0),
+        'fmax': feat_cfg.get('fmax', None),
+        'window': feat_cfg.get('window', 'hann'),
     }
 
     # M1: MFCC + Pool + Cosine
@@ -203,12 +208,18 @@ def run_experiment(config: Dict, output_dir: Path, logger: logging.Logger):
         raise RuntimeError("CUDA device requested but not available. Set device='cpu' in config.")
 
     sr = dataset_cfg.get('sr', 22050)
-    num_folds = eval_cfg.get('num_folds', 5)
+    folds = eval_cfg.get('folds', None)
+    if folds is None:
+        num_folds = eval_cfg.get('num_folds', 5)
+        folds = list(range(1, num_folds + 1))
+    else:
+        folds = [int(f) for f in folds]
+        num_folds = len(folds)
 
     # Print experiment header
     console.print(Panel.fit(
         "[bold blue]Sound Retrieval Experiment[/bold blue]\n"
-        f"Dataset: ESC-50 | Device: {device} | Folds: {num_folds}",
+        f"Dataset: ESC-50 | Device: {device} | Folds: {folds}",
         border_style="blue"
     ))
 
@@ -216,7 +227,7 @@ def run_experiment(config: Dict, output_dir: Path, logger: logging.Logger):
     logger.info("EXPERIMENT STARTED")
     logger.info(f"Device: {device}")
     logger.info(f"Sample rate: {sr}")
-    logger.info(f"Number of folds: {num_folds}")
+    logger.info(f"Folds: {folds}")
     logger.info("=" * 60)
 
     # Load dataset
@@ -244,6 +255,8 @@ def run_experiment(config: Dict, output_dir: Path, logger: logging.Logger):
         'methods': {}
     }
 
+    queries_per_fold = len(dataset) // dataset.NUM_FOLDS
+
     # Create progress display
     with Progress(
         SpinnerColumn(),
@@ -259,7 +272,7 @@ def run_experiment(config: Dict, output_dir: Path, logger: logging.Logger):
         # Overall progress
         overall_task = progress.add_task(
             "[cyan]Overall Progress",
-            total=len(methods) * num_folds
+            total=len(methods) * len(folds)
         )
 
         # Run each method
@@ -273,14 +286,14 @@ def run_experiment(config: Dict, output_dir: Path, logger: logging.Logger):
             # Add method task
             method_task = progress.add_task(
                 f"[yellow]{method_name}",
-                total=num_folds * (len(dataset) // num_folds)
+                total=len(folds) * queries_per_fold
             )
 
             fold_metrics = []
 
             logger.info(f"Running method: {method_name}")
 
-            for fold in range(1, num_folds + 1):
+            for fold in folds:
                 # Get train/test split
                 query_samples, gallery_samples = dataset.get_query_gallery_split(fold)
 
@@ -300,19 +313,27 @@ def run_experiment(config: Dict, output_dir: Path, logger: logging.Logger):
 
                 progress.update(overall_task, advance=1)
 
-            # Compute mean and std across folds
-            metric_names = fold_metrics[0].keys()
-            for metric in metric_names:
-                values = [fm[metric] for fm in fold_metrics]
-                method_results['mean'][metric] = float(np.mean(values))
-                method_results['std'][metric] = float(np.std(values))
+            # Compute mean, std, and bootstrap CI across folds
+            seed = get_seed_from_config(config)
+            aggregated_with_ci = aggregate_metrics_with_ci(fold_metrics, random_state=seed)
+            method_results['ci'] = {}
+            for metric, stats in aggregated_with_ci.items():
+                method_results['mean'][metric] = float(stats['mean'])
+                method_results['std'][metric] = float(stats['std'])
+                method_results['ci'][metric] = {
+                    'lower': float(stats['ci_lower']),
+                    'upper': float(stats['ci_upper']),
+                    'width': float(stats['ci_width']),
+                }
 
             results['methods'][method_name] = method_results
 
-            # Log results
+            # Log results with CI
             logger.info(f"  Results for {method_name}:")
             for metric, value in method_results['mean'].items():
-                logger.info(f"    {metric}: {value:.4f} ± {method_results['std'][metric]:.4f}")
+                ci = method_results['ci'].get(metric, {})
+                ci_str = f" [{ci.get('lower', 0):.4f}, {ci.get('upper', 0):.4f}]" if ci else ""
+                logger.info(f"    {metric}: {value:.4f} ± {method_results['std'][metric]:.4f}{ci_str}")
 
             # Remove completed task
             progress.remove_task(method_task)
@@ -330,7 +351,7 @@ def run_experiment(config: Dict, output_dir: Path, logger: logging.Logger):
 def display_results_table(results: Dict, console: Console):
     """Display results in a formatted table."""
     table = Table(
-        title="[bold]Retrieval Results (Mean ± Std across 5 folds)[/bold]",
+        title="[bold]Retrieval Results (Mean ± Std across folds)[/bold]",
         box=box.ROUNDED,
         show_header=True,
         header_style="bold cyan"
@@ -424,6 +445,11 @@ def main():
 
     # Set up logging
     logger = setup_logging(output_dir)
+
+    seed = get_seed_from_config(config)
+    if seed is not None:
+        set_seed(seed, deterministic=bool(config.get('deterministic', False)))
+        logger.info(f"Random seed set to {seed}")
 
     try:
         # Run experiment

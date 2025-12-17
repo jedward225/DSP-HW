@@ -5,6 +5,7 @@ Runs each existing experiment script sequentially, logging output per step.
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -41,11 +42,13 @@ def build_experiments(skip_training: bool = False):
     ]
 
     if not skip_training:
+        # Get data directory from environment or use default
+        data_dir = os.environ.get('ESC50_DIR', 'ESC-50')
         cmds.extend(
             [
-                ("Train Autoencoder", [sys.executable, "experiments/training/train_autoencoder.py"]),
-                ("Train CNN", [sys.executable, "experiments/training/train_cnn.py"]),
-                ("Train Contrastive", [sys.executable, "experiments/training/train_contrastive.py"]),
+                ("Train Autoencoder", [sys.executable, "experiments/training/train_autoencoder.py", "--data_dir", data_dir]),
+                ("Train CNN", [sys.executable, "experiments/training/train_cnn.py", "--data_dir", data_dir]),
+                ("Train Contrastive", [sys.executable, "experiments/training/train_contrastive.py", "--data_dir", data_dir]),
             ]
         )
 

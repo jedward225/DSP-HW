@@ -91,6 +91,8 @@ class MelSpectrogramDataset(Dataset):
         mel_max = mel.max()
         if mel_max - mel_min > 1e-10:
             mel = (mel - mel_min) / (mel_max - mel_min)
+        else:
+            mel = np.zeros_like(mel)
 
         return torch.from_numpy(mel).float(), self.labels[idx]
 
@@ -225,6 +227,9 @@ def train_fold(args, fold, device):
                 'val_acc': val_acc,
                 'config': {
                     'n_mels': 128,
+                    'n_frames': train_dataset.n_frames,
+                    'n_fft': train_dataset.n_fft,
+                    'hop_length': train_dataset.hop_length,
                     'n_classes': 50,
                     'hidden_dim': args.hidden_dim,
                 },

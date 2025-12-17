@@ -54,7 +54,8 @@ def precision_at_k(
 
     top_k = retrieved_labels[:k]
     relevant = (top_k == query_label).sum().item()
-    return relevant / k
+    # Divide by actual number of items (handles case where gallery < k)
+    return relevant / len(top_k) if len(top_k) > 0 else 0.0
 
 
 def recall_at_k(
@@ -327,7 +328,8 @@ class RetrievalMetrics:
 def compute_all_metrics(
     retrieved_labels: torch.Tensor,
     query_label: Union[int, torch.Tensor],
-    num_relevant: Optional[int] = None
+    num_relevant: Optional[int] = None,
+    k_values: Optional[List[int]] = None
 ) -> Dict[str, float]:
     """
     Compute all retrieval metrics for a single query.
@@ -336,6 +338,7 @@ def compute_all_metrics(
         retrieved_labels: Labels of retrieved items (sorted by similarity)
         query_label: Label of the query item
         num_relevant: Total number of relevant items in gallery
+        k_values: List of k values to compute metrics for (default: [1, 5, 10, 20])
 
     Returns:
         Dictionary of all metrics
@@ -343,22 +346,19 @@ def compute_all_metrics(
     if num_relevant is None:
         num_relevant = (retrieved_labels == query_label).sum().item()
 
-    return {
-        'hit@1': hit_at_k(retrieved_labels, query_label, k=1),
-        'hit@5': hit_at_k(retrieved_labels, query_label, k=5),
-        'hit@10': hit_at_k(retrieved_labels, query_label, k=10),
-        'hit@20': hit_at_k(retrieved_labels, query_label, k=20),
-        'precision@1': precision_at_k(retrieved_labels, query_label, k=1),
-        'precision@5': precision_at_k(retrieved_labels, query_label, k=5),
-        'precision@10': precision_at_k(retrieved_labels, query_label, k=10),
-        'precision@20': precision_at_k(retrieved_labels, query_label, k=20),
-        'mrr@10': mrr_at_k(retrieved_labels, query_label, k=10),
-        'mrr@20': mrr_at_k(retrieved_labels, query_label, k=20),
-        'ap@10': average_precision_at_k(retrieved_labels, query_label, k=10),
-        'ap@20': average_precision_at_k(retrieved_labels, query_label, k=20),
-        'ndcg@10': ndcg_at_k(retrieved_labels, query_label, k=10, num_relevant=num_relevant),
-        'ndcg@20': ndcg_at_k(retrieved_labels, query_label, k=20, num_relevant=num_relevant),
-    }
+    if k_values is None:
+        k_values = [1, 5, 10, 20]
+
+    metrics = {}
+    for k in k_values:
+        metrics[f'hit@{k}'] = hit_at_k(retrieved_labels, query_label, k=k)
+        metrics[f'precision@{k}'] = precision_at_k(retrieved_labels, query_label, k=k)
+        if k >= 10:  # MRR, AP, NDCG typically computed for k >= 10
+            metrics[f'mrr@{k}'] = mrr_at_k(retrieved_labels, query_label, k=k)
+            metrics[f'ap@{k}'] = average_precision_at_k(retrieved_labels, query_label, k=k)
+            metrics[f'ndcg@{k}'] = ndcg_at_k(retrieved_labels, query_label, k=k, num_relevant=num_relevant)
+
+    return metrics
 
 
 def aggregate_metrics(

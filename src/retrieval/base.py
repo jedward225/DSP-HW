@@ -6,13 +6,22 @@ import torch
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import List, Dict, Tuple, Optional, Union
-from pathlib import Path
-import sys
-
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.metrics.retrieval_metrics import compute_all_metrics, aggregate_metrics
+
+
+def _stable_argsort(tensor: torch.Tensor, descending: bool = False) -> torch.Tensor:
+    """
+    Stable argsort with compatibility for older PyTorch versions.
+
+    torch.argsort(..., stable=True) requires PyTorch >= 1.9.
+    Falls back to standard argsort if stable is not supported.
+    """
+    try:
+        return torch.argsort(tensor, descending=descending, stable=True)
+    except TypeError:
+        # PyTorch < 1.9 doesn't support stable parameter
+        return torch.argsort(tensor, descending=descending)
 
 
 class BaseRetriever(ABC):
@@ -130,7 +139,9 @@ class BaseRetriever(ABC):
                 waveform = torch.from_numpy(waveform).float()
             waveform = waveform.to(self.device)
 
-            features = self.extract_features(waveform, self.sr)
+            # Use sample's actual SR if available, otherwise fall back to self.sr
+            sample_sr = sample.get('sr', self.sr)
+            features = self.extract_features(waveform, sample_sr)
             features_list.append(features)
             labels_list.append(sample['target'])
             indices_list.append(sample.get('idx', len(indices_list)))
@@ -152,7 +163,8 @@ class BaseRetriever(ABC):
         self,
         query_waveform: torch.Tensor,
         k: int = None,
-        return_distances: bool = False
+        return_distances: bool = False,
+        query_sr: int = None
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Retrieve similar items from gallery for a query.
@@ -161,6 +173,7 @@ class BaseRetriever(ABC):
             query_waveform: Query audio waveform
             k: Number of results to return (None = all)
             return_distances: If True, also return distances
+            query_sr: Sample rate of query (uses self.sr if not provided)
 
         Returns:
             Indices of retrieved items (sorted by similarity)
@@ -174,14 +187,15 @@ class BaseRetriever(ABC):
             query_waveform = torch.from_numpy(query_waveform).float()
         query_waveform = query_waveform.to(self.device)
 
-        # Extract query features
-        query_features = self.extract_features(query_waveform, self.sr)
+        # Extract query features using provided SR or default
+        sr = query_sr if query_sr is not None else self.sr
+        query_features = self.extract_features(query_waveform, sr)
 
         # Compute distances to all gallery items
         distances = self.compute_distance(query_features, self._gallery_features)
 
         # Sort by distance (ascending = most similar first)
-        sorted_indices = torch.argsort(distances)
+        sorted_indices = _stable_argsort(distances, descending=False)
 
         if k is not None:
             sorted_indices = sorted_indices[:k]
@@ -195,7 +209,8 @@ class BaseRetriever(ABC):
     def retrieve_with_labels(
         self,
         query_waveform: torch.Tensor,
-        k: int = None
+        k: int = None,
+        query_sr: int = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Retrieve and return labels of retrieved items.
@@ -203,11 +218,12 @@ class BaseRetriever(ABC):
         Args:
             query_waveform: Query audio waveform
             k: Number of results to return
+            query_sr: Sample rate of query (uses self.sr if not provided)
 
         Returns:
             Tuple of (retrieved_indices, retrieved_labels)
         """
-        indices = self.retrieve(query_waveform, k=k)
+        indices = self.retrieve(query_waveform, k=k, query_sr=query_sr)
         labels = self._gallery_labels[indices]
         return indices, labels
 
@@ -231,15 +247,17 @@ class BaseRetriever(ABC):
 
         query_waveform = query_sample['waveform']
         query_label = query_sample['target']
+        query_sr = query_sample.get('sr', None)  # Use sample SR if provided
 
         # Retrieve
-        _, retrieved_labels = self.retrieve_with_labels(query_waveform)
+        _, retrieved_labels = self.retrieve_with_labels(query_waveform, query_sr=query_sr)
 
         # Compute metrics
         metrics = compute_all_metrics(
             retrieved_labels,
             query_label,
-            num_relevant=(self._gallery_labels == query_label).sum().item()
+            num_relevant=(self._gallery_labels == query_label).sum().item(),
+            k_values=k_values
         )
 
         return metrics
@@ -247,7 +265,8 @@ class BaseRetriever(ABC):
     def evaluate(
         self,
         query_samples: List[Dict],
-        show_progress: bool = False
+        show_progress: bool = False,
+        k_values: List[int] = None
     ) -> Dict[str, Dict[str, float]]:
         """
         Evaluate retrieval performance on a set of queries.
@@ -255,6 +274,7 @@ class BaseRetriever(ABC):
         Args:
             query_samples: List of query sample dictionaries
             show_progress: If True, show progress bar
+            k_values: List of K values for metrics (default: [1, 5, 10, 20])
 
         Returns:
             Aggregated metrics (mean and std for each metric)
@@ -267,7 +287,7 @@ class BaseRetriever(ABC):
             iterator = track(query_samples, description=f"Evaluating {self.name}...")
 
         for sample in iterator:
-            metrics = self.evaluate_query(sample)
+            metrics = self.evaluate_query(sample, k_values=k_values)
             all_metrics.append(metrics)
 
         return aggregate_metrics(all_metrics)

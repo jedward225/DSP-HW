@@ -48,9 +48,11 @@ from src.retrieval import (
     create_method_m1,
     create_method_m3,
     create_method_m5,
+    create_ssim_retriever,
     create_twostage_retriever,
 )
 from src.metrics.retrieval_metrics import aggregate_metrics
+from src.utils.seed import get_seed_from_config, set_seed
 
 console = Console()
 
@@ -111,9 +113,15 @@ def run_twostage_experiments(config_path: str, output_dir: Path):
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(output_dir)
 
+    seed = get_seed_from_config(yaml_config)
+    if seed is not None:
+        set_seed(seed, deterministic=bool(yaml_config.get('deterministic', False)))
+        logger.info(f"Random seed set to {seed}")
+
     dataset_cfg = yaml_config.get('dataset', {})
     feat_cfg = yaml_config.get('features', {})
     dtw_cfg = yaml_config.get('dtw', {})
+    twostage_cfg = yaml_config.get('twostage', {})
     device = yaml_config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
     sr = dataset_cfg.get('sr', 22050)
     folds = yaml_config.get('evaluation', {}).get('folds', [1, 2, 3, 4, 5])
@@ -162,6 +170,10 @@ def run_twostage_experiments(config_path: str, output_dir: Path):
         n_fft=feat_cfg.get('n_fft', 2048),
         hop_length=feat_cfg.get('hop_length', 512),
     )
+
+    stage2_method = str(twostage_cfg.get('stage2', 'dtw')).lower()
+    if stage2_method not in {'dtw', 'ssim'}:
+        raise ValueError("twostage.stage2 must be one of: 'dtw', 'ssim'")
 
     results = {}
     queries_per_fold = len(dataset) // 5
@@ -237,14 +249,23 @@ def run_twostage_experiments(config_path: str, output_dir: Path):
                     n_fft=feat_cfg.get('n_fft', 2048),
                     hop_length=feat_cfg.get('hop_length', 512),
                 )
-                fine = create_method_m5(
-                    device='cpu',
-                    sr=sr,
-                    n_mfcc=dtw_cfg.get('n_mfcc', 13),
-                    n_mels=dtw_cfg.get('n_mels', 64),
-                    n_fft=feat_cfg.get('n_fft', 2048),
-                    hop_length=feat_cfg.get('hop_length', 512),
-                )
+                if stage2_method == 'dtw':
+                    fine = create_method_m5(
+                        device='cpu',  # DTW uses CPU/Numba
+                        sr=sr,
+                        n_mfcc=dtw_cfg.get('n_mfcc', 13),
+                        n_mels=dtw_cfg.get('n_mels', 64),
+                        n_fft=feat_cfg.get('n_fft', 2048),
+                        hop_length=feat_cfg.get('hop_length', 512),
+                    )
+                else:
+                    fine = create_ssim_retriever(
+                        device='cpu',
+                        sr=sr,
+                        n_mels=feat_cfg.get('n_mels', 128),
+                        n_fft=feat_cfg.get('n_fft', 2048),
+                        hop_length=feat_cfg.get('hop_length', 512),
+                    )
 
                 twostage = create_twostage_retriever(
                     coarse_retriever=coarse,

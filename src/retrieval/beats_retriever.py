@@ -3,6 +3,12 @@ BEATs-based audio retrieval.
 
 Uses pretrained BEATs (Audio Pre-Training with Acoustic Tokenizers) model
 for audio embeddings with cosine distance.
+
+Note on Architecture Convention:
+    This module is an exception to the "only dsp_core imports librosa/scipy" rule.
+    BEATs requires resampling to 16kHz and uses librosa for this purpose.
+    This exception is documented because deep learning retrievers have specialized
+    preprocessing requirements that differ from the traditional DSP pipeline.
 """
 
 import torch
@@ -11,9 +17,7 @@ from typing import Optional, List, Dict
 from pathlib import Path
 import sys
 
-# Add project root to path
 project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from src.retrieval.base import BaseRetriever
 
@@ -35,8 +39,8 @@ class BEATsRetriever(BaseRetriever):
     def __init__(
         self,
         name: str = "BEATs",
-        device: str = 'cuda',
-        sr: int = 16000,
+        device: Optional[str] = None,
+        sr: int = 22050,
         checkpoint_path: str = None,
         layer: int = -1,
         pooling: str = 'mean',
@@ -47,20 +51,28 @@ class BEATsRetriever(BaseRetriever):
         Args:
             name: Method name
             device: Device for computation ('cpu' or 'cuda')
-            sr: Sample rate (internally resamples to 16kHz)
+            sr: Input sample rate (audio will be resampled to 16kHz internally)
             checkpoint_path: Path to BEATs checkpoint (required)
             layer: Which transformer layer to use (-1 = last)
             pooling: Pooling method for temporal dimension ('mean', 'max', 'cls')
         """
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
         super().__init__(name=name, device=device, sr=sr)
 
         if checkpoint_path is None:
             checkpoint_path = str(project_root / 'beats' / 'BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt')
 
         self.checkpoint_path = checkpoint_path
+        # Note: layer parameter reserved for future intermediate layer extraction
+        # Currently BEATs always uses final layer output
         self.layer = layer
         self.pooling = pooling
         self.beats_sr = 16000  # BEATs requires 16kHz
+
+        if not Path(self.checkpoint_path).exists():
+            raise FileNotFoundError(f"BEATs checkpoint not found: {self.checkpoint_path}")
 
         # Load BEATs model
         self._load_beats_model()
@@ -69,6 +81,8 @@ class BEATsRetriever(BaseRetriever):
         """Load the BEATs model from checkpoint."""
         # Add BEATs source to path
         beats_src_path = project_root / 'unilm' / 'beats'
+        if not beats_src_path.exists():
+            raise FileNotFoundError(f"BEATs source not found at: {beats_src_path}")
         if str(beats_src_path) not in sys.path:
             sys.path.insert(0, str(beats_src_path))
 
@@ -122,7 +136,9 @@ class BEATsRetriever(BaseRetriever):
         # Resample to 16kHz if needed
         waveform_np = self._resample_audio(waveform_np, sr)
 
-        # Convert to tensor and scale (BEATs expects waveform * 2^15)
+        # Convert to tensor
+        # BEATs expects normalized audio in [-1, 1] range (NOT scaled by 2^15)
+        # The model was pretrained with this normalization convention
         audio_tensor = torch.from_numpy(waveform_np).float().unsqueeze(0).to(self.device)
 
         # Extract features
@@ -182,7 +198,7 @@ class BEATsRetriever(BaseRetriever):
 
 
 def create_beats_retriever(
-    device: str = 'cuda',
+    device: Optional[str] = None,
     checkpoint_path: str = None,
     pooling: str = 'mean',
     **kwargs
@@ -204,7 +220,7 @@ def create_beats_retriever(
     return BEATsRetriever(
         name="BEATs",
         device=device,
-        sr=16000,  # BEATs requires 16kHz
+        sr=22050,  # Input SR from dataset; internally resampled to 16kHz
         checkpoint_path=checkpoint_path,
         pooling=pooling,
     )

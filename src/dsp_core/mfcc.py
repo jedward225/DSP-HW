@@ -5,6 +5,7 @@ Only this module (dsp_core) is allowed to import librosa.
 
 import numpy as np
 import librosa
+import scipy.fftpack
 
 
 def mfcc(
@@ -60,7 +61,8 @@ def mfcc(
     if window == 'rectangular' or window == 'rect':
         window = 'boxcar'
 
-    # If htk=True, we need to compute mel spectrogram with HTK formula first
+    # If htk=True, compute mel spectrogram with HTK formula and apply DCT directly
+    # to avoid double mel filtering that occurs when passing S to librosa.mfcc()
     if htk and S is None:
         # Compute STFT
         stft = librosa.stft(
@@ -85,7 +87,21 @@ def mfcc(
             norm='slaney'
         )
         # Apply mel filterbank
-        S = np.dot(mel_basis, S_power)
+        S_mel = np.dot(mel_basis, S_power)
+
+        # Convert to log scale (dB)
+        S_log = librosa.power_to_db(S_mel, ref=np.max)
+
+        # Apply DCT directly to get MFCCs
+        # DCT operates along frequency axis (axis=0 for shape n_mels x n_frames)
+        dct_norm = 'ortho' if norm == 'ortho' else None
+        mfccs = scipy.fftpack.dct(S_log, axis=0, type=dct_type, norm=dct_norm)[:n_mfcc]
+
+        # Apply liftering if specified
+        if lifter > 0:
+            mfccs = lifter_cepstrum(mfccs, lifter)
+
+        return mfccs
 
     return librosa.feature.mfcc(
         y=y if S is None else None,

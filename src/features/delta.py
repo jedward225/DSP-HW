@@ -35,24 +35,15 @@ def compute_delta(
 
     half_width = width // 2
 
-    # Create finite difference weights
-    # For order=1: weighted regression slope
-    # For order=2: second derivative via parabolic fit
-    n = torch.arange(-half_width, half_width + 1, dtype=data.dtype, device=data.device)
+    if order == 2:
+        return compute_delta_delta(data, width=width, axis=axis, mode=mode)
 
-    if order == 1:
-        # First derivative: linear regression slope
-        # delta[t] = sum(n * x[t+n]) / sum(n^2)
-        weights = n / (n ** 2).sum()
-    elif order == 2:
-        # Second derivative
-        # Uses second-order coefficients from polynomial fit
-        weights = 2 * n / (n ** 2).sum()
-        weights = compute_delta(
-            weights.unsqueeze(0), width=width, order=1
-        ).squeeze()
-    else:
+    if order != 1:
         raise ValueError(f"Order must be 1 or 2, got {order}")
+
+    # Create finite difference weights (regression slope)
+    n = torch.arange(-half_width, half_width + 1, dtype=data.dtype, device=data.device)
+    weights = n / (n ** 2).sum()
 
     # Reshape weights for convolution
     weights = weights.view(1, 1, -1)

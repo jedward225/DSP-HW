@@ -33,6 +33,7 @@ from .contrastive_retriever import ContrastiveRetriever, create_contrastive_retr
 from .fusion_retriever import LateFusionRetriever, RankFusionRetriever, create_late_fusion, create_rank_fusion
 from .twostage_retriever import TwoStageRetriever, create_twostage_retriever
 from .partial_retriever import PartialQueryRetriever, create_partial_retriever
+from .ssim_retriever import SSIMRetriever, create_ssim_retriever
 
 __all__ = [
     'BaseRetriever',
@@ -50,6 +51,7 @@ __all__ = [
     'RankFusionRetriever',
     'TwoStageRetriever',
     'PartialQueryRetriever',
+    'SSIMRetriever',
     # Factory functions
     'create_method_m1',
     'create_method_m2',
@@ -68,4 +70,5 @@ __all__ = [
     'create_rank_fusion',
     'create_twostage_retriever',
     'create_partial_retriever',
+    'create_ssim_retriever',
 ]

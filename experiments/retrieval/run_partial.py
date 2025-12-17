@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Partial Query Retrieval Experiments (加分项)
+Partial Query Retrieval Experiments
 
 This script tests retrieval with partial (short) query clips:
   - Query durations: 0.5s, 1s, 2s, 3s (vs full 5s)
@@ -46,6 +46,7 @@ from rich import box
 from src.data.esc50 import ESC50Dataset
 from src.retrieval import create_method_m1, create_partial_retriever
 from src.metrics.retrieval_metrics import aggregate_metrics
+from src.utils.seed import get_seed_from_config, set_seed
 
 console = Console()
 
@@ -104,8 +105,8 @@ def evaluate_partial_retriever(
 
         waveform_tensor = torch.from_numpy(waveform).float()
 
-        # Retrieve using partial matching
-        indices, labels = retriever.retrieve_with_labels(waveform_tensor)
+        # Retrieve using partial matching (pass crop_mode through)
+        indices, labels = retriever.retrieve_with_labels(waveform_tensor, crop_mode=crop_mode)
 
         # Compute metrics
         from src.metrics.retrieval_metrics import compute_all_metrics
@@ -127,6 +128,11 @@ def run_partial_experiments(config_path: str, output_dir: Path):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = setup_logging(output_dir)
+
+    seed = get_seed_from_config(yaml_config)
+    if seed is not None:
+        set_seed(seed, deterministic=bool(yaml_config.get('deterministic', False)))
+        logger.info(f"Random seed set to {seed}")
 
     dataset_cfg = yaml_config.get('dataset', {})
     feat_cfg = yaml_config.get('features', {})
@@ -157,6 +163,7 @@ def run_partial_experiments(config_path: str, output_dir: Path):
     # ESC-50 audio is 5 seconds, so we test various shorter durations
     query_durations = [0.5, 1.0, 2.0, 3.0, 5.0]  # 5.0 is baseline (full query)
     stride_ratio = 0.5  # stride = duration * 0.5
+    crop_mode = 'center'  # How to crop queries: 'center', 'start', 'random'
 
     console.print(f"\n[bold]Testing query durations: {query_durations} seconds[/bold]")
 
@@ -214,7 +221,7 @@ def run_partial_experiments(config_path: str, output_dir: Path):
                     )
                     metrics = evaluate_partial_retriever(
                         partial_retriever, query_samples, gallery_samples,
-                        crop_mode='center', progress=progress, task_id=task
+                        crop_mode=crop_mode, progress=progress, task_id=task
                     )
 
                 fold_metrics.append(metrics)

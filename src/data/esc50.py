@@ -16,9 +16,6 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-# Import from dsp_core (the only allowed external audio library)
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.dsp_core import load_audio
 
 

@@ -103,7 +103,7 @@ class AudioProcessor:
 
             if is_torch:
                 if pad_mode == 'constant':
-                    padding = torch.full((pad_length,), pad_value, dtype=waveform.dtype)
+                    padding = torch.full((pad_length,), pad_value, dtype=waveform.dtype, device=waveform.device)
                     waveform = torch.cat([waveform, padding])
                 elif pad_mode == 'reflect':
                     waveform = torch.nn.functional.pad(

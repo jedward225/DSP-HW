@@ -5,15 +5,19 @@ Enables retrieval using short query clips (0.5s, 1s, 2s)
 against full-length gallery audios using sliding window matching.
 
 This is a bonus feature (加分项) as specified in proposal Section 5.4.
+
+Compatibility Notes:
+    - Works with: PoolRetriever (M1, M2, M3, M4), BoAWRetriever (M6)
+    - NOT compatible with: DTWRetriever (M5) - DTW uses sequences, not fixed features
+    - Caution with Mahalanobis distance: Single-window "galleries" may cause
+      covariance estimation issues (singular matrix)
+    - Memory/Performance: Caches per-window features for all gallery items,
+      which can be memory-intensive for large galleries
 """
 
 import torch
 import numpy as np
 from typing import Optional, List, Dict, Literal
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.retrieval.base import BaseRetriever
 
@@ -87,6 +91,16 @@ class PartialQueryRetriever(BaseRetriever):
         For each gallery audio, extract features from multiple windows
         to enable partial query matching.
         """
+        # Ensure BoAW codebook is fitted before extracting features
+        # This is needed because BoAW.extract_features() requires a fitted codebook
+        if hasattr(self.base_retriever, 'fit_codebook') and hasattr(self.base_retriever, '_codebook_fitted'):
+            if not self.base_retriever._codebook_fitted:
+                self.base_retriever.fit_codebook(gallery_samples, show_progress=show_progress)
+
+        if getattr(self.base_retriever, 'distance', None) == 'mahalanobis':
+            self.base_retriever.clear_gallery()
+            self.base_retriever.build_gallery(gallery_samples, show_progress=False)
+
         self._gallery_samples = gallery_samples
         self._gallery_labels = torch.tensor(
             [s['target'] for s in gallery_samples],
@@ -105,15 +119,19 @@ class PartialQueryRetriever(BaseRetriever):
             if isinstance(waveform, torch.Tensor):
                 waveform = waveform.cpu().numpy()
 
+            sample_sr = sample.get('sr', self.sr)
+            query_length = max(1, int(self.query_duration_s * sample_sr))
+            stride_length = max(1, int(self.stride_s * sample_sr))
+
             # Extract features from sliding windows
             window_features = []
             total_samples = len(waveform)
 
             # Slide window across audio
-            for start in range(0, total_samples - self.query_length + 1, self.stride_length):
-                window = waveform[start:start + self.query_length]
+            for start in range(0, total_samples - query_length + 1, stride_length):
+                window = waveform[start:start + query_length]
                 window_tensor = torch.from_numpy(window).float().to(self.device)
-                feat = self.base_retriever.extract_features(window_tensor, self.sr)
+                feat = self.base_retriever.extract_features(window_tensor, sample_sr)
                 window_features.append(feat)
 
             if window_features:
@@ -121,7 +139,7 @@ class PartialQueryRetriever(BaseRetriever):
             else:
                 # Audio shorter than query length - use full audio
                 full_tensor = torch.from_numpy(waveform).float().to(self.device)
-                feat = self.base_retriever.extract_features(full_tensor, self.sr)
+                feat = self.base_retriever.extract_features(full_tensor, sample_sr)
                 self._gallery_window_features.append([feat])
 
         # For compatibility with base class
@@ -165,7 +183,8 @@ class PartialQueryRetriever(BaseRetriever):
         query_waveform: torch.Tensor,
         k: int = None,
         return_distances: bool = False,
-        crop_mode: str = 'center'
+        crop_mode: str = 'center',
+        query_sr: int = None,
     ):
         """
         Retrieve using partial query matching.
@@ -187,21 +206,24 @@ class PartialQueryRetriever(BaseRetriever):
             query_waveform = torch.from_numpy(query_waveform).float()
         query_waveform = query_waveform.to(self.device)
 
+        sr = query_sr if query_sr is not None else self.sr
+        query_length = max(1, int(self.query_duration_s * sr))
+
         # Crop query to specified duration
-        if len(query_waveform) > self.query_length:
+        if len(query_waveform) > query_length:
             if crop_mode == 'center':
-                start = (len(query_waveform) - self.query_length) // 2
+                start = (len(query_waveform) - query_length) // 2
             elif crop_mode == 'start':
                 start = 0
             elif crop_mode == 'random':
-                start = np.random.randint(0, len(query_waveform) - self.query_length + 1)
+                start = np.random.randint(0, len(query_waveform) - query_length + 1)
             else:
-                start = (len(query_waveform) - self.query_length) // 2
+                start = (len(query_waveform) - query_length) // 2
 
-            query_waveform = query_waveform[start:start + self.query_length]
+            query_waveform = query_waveform[start:start + query_length]
 
         # Extract query features
-        query_features = self.extract_features(query_waveform, self.sr)
+        query_features = self.extract_features(query_waveform, sr)
 
         # Compute distances
         distances = self.compute_distance(query_features, None)
@@ -217,11 +239,36 @@ class PartialQueryRetriever(BaseRetriever):
 
         return sorted_indices
 
+    def retrieve_with_labels(
+        self,
+        query_waveform: torch.Tensor,
+        k: int = None,
+        crop_mode: str = 'center',
+        query_sr: int = None,
+    ):
+        """
+        Retrieve and return labels of retrieved items.
+
+        Overrides base method to pass crop_mode through.
+
+        Args:
+            query_waveform: Query audio waveform
+            k: Number of results to return
+            crop_mode: How to crop query ('center', 'start', 'random')
+
+        Returns:
+            Tuple of (retrieved_indices, retrieved_labels)
+        """
+        indices = self.retrieve(query_waveform, k=k, crop_mode=crop_mode, query_sr=query_sr)
+        labels = self._gallery_labels[indices]
+        return indices, labels
+
     def retrieve_with_localization(
         self,
         query_waveform: torch.Tensor,
         gallery_idx: int,
-        k_windows: int = 5
+        k_windows: int = 5,
+        query_sr: int = None,
     ) -> Dict:
         """
         Find best matching locations within a gallery item.
@@ -243,13 +290,16 @@ class PartialQueryRetriever(BaseRetriever):
             query_waveform = torch.from_numpy(query_waveform).float()
         query_waveform = query_waveform.to(self.device)
 
+        sr = query_sr if query_sr is not None else self.sr
+        query_length = max(1, int(self.query_duration_s * sr))
+
         # Crop query
-        if len(query_waveform) > self.query_length:
-            start = (len(query_waveform) - self.query_length) // 2
-            query_waveform = query_waveform[start:start + self.query_length]
+        if len(query_waveform) > query_length:
+            start = (len(query_waveform) - query_length) // 2
+            query_waveform = query_waveform[start:start + query_length]
 
         # Extract query features
-        query_features = self.extract_features(query_waveform, self.sr)
+        query_features = self.extract_features(query_waveform, sr)
 
         # Get window features for specified gallery item
         window_feats = self._gallery_window_features[gallery_idx]
@@ -267,13 +317,17 @@ class PartialQueryRetriever(BaseRetriever):
         # Get top-k windows
         top_k_indices = np.argsort(window_dists)[:k_windows]
 
+        gallery_sr = self._gallery_samples[gallery_idx].get('sr', self.sr) if self._gallery_samples else self.sr
+        gallery_query_length = max(1, int(self.query_duration_s * gallery_sr))
+        gallery_stride_length = max(1, int(self.stride_s * gallery_sr))
+
         # Convert to time positions
         positions = []
         for idx in top_k_indices:
-            start_sample = idx * self.stride_length
-            end_sample = start_sample + self.query_length
-            start_s = start_sample / self.sr
-            end_s = end_sample / self.sr
+            start_sample = idx * gallery_stride_length
+            end_sample = start_sample + gallery_query_length
+            start_s = start_sample / gallery_sr
+            end_s = end_sample / gallery_sr
             positions.append((start_s, end_s))
 
         return {
