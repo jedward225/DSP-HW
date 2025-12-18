@@ -51,7 +51,7 @@ from src.retrieval import (
     create_ssim_retriever,
     create_twostage_retriever,
 )
-from src.metrics.retrieval_metrics import aggregate_metrics
+from src.metrics.retrieval_metrics import aggregate_metrics, compute_all_metrics
 from src.utils.seed import get_seed_from_config, set_seed
 
 console = Console()
@@ -95,7 +95,7 @@ def evaluate_retriever(
         total_time += time.perf_counter() - start
         all_metrics.append(metrics)
 
-        if progress and task_id:
+        if progress is not None and task_id is not None:
             progress.update(task_id, advance=1)
 
     # Aggregate
@@ -145,28 +145,42 @@ def run_twostage_experiments(config_path: str, output_dir: Path):
     dataset = ESC50Dataset(root_dir=str(dataset_root), sr=sr, preload=False)
     console.print(f"[green]✓[/green] Loaded {len(dataset)} samples")
 
+    # Cache samples in-memory to avoid repeated disk I/O across folds/N.
+    sample_cache: Dict[int, dict] = {}
+
+    def get_sample(idx: int) -> dict:
+        if idx not in sample_cache:
+            sample_cache[idx] = dataset[idx]
+        return sample_cache[idx]
+
+    fold_splits: Dict[int, tuple] = {}
+    max_queries_per_fold = twostage_cfg.get('max_queries_per_fold', None)
+    for fold in folds:
+        query_indices, gallery_indices = dataset.get_query_gallery_indices(fold)
+        if max_queries_per_fold is not None:
+            query_indices = query_indices[: int(max_queries_per_fold)]
+        query_samples = [get_sample(i) for i in query_indices]
+        gallery_samples = [get_sample(i) for i in gallery_indices]
+        fold_splits[fold] = (query_indices, gallery_indices, query_samples, gallery_samples)
+
     # N values to test
     gallery_size = len(dataset) * 4 // 5  # 80% for gallery
-    n_values = [20, 50, 100, 200, 500, 1000, gallery_size]
-    n_values = [n for n in n_values if n <= gallery_size]
+    default_n_values = [20, 50, 100, 200, 500, 1000, gallery_size]
+    n_values = twostage_cfg.get('n_values', default_n_values)
+    n_values = sorted({int(n) for n in n_values if int(n) > 0 and int(n) <= gallery_size})
 
     console.print(f"\n[bold]Testing N values: {n_values}[/bold]")
 
-    # Create base retrievers
+    # MFCC extraction is CPU-bound (librosa). Using CUDA here adds overhead for this
+    # script, so we run coarse retrieval on CPU for speed.
+    compute_device = 'cpu' if device == 'cuda' else device
+
+    # Create base retrievers (used for feature extraction and coarse distances)
     coarse_retriever = create_method_m1(
-        device=device,
+        device=compute_device,
         sr=sr,
         n_mfcc=feat_cfg.get('n_mfcc', 20),
         n_mels=feat_cfg.get('n_mels', 128),
-        n_fft=feat_cfg.get('n_fft', 2048),
-        hop_length=feat_cfg.get('hop_length', 512),
-    )
-
-    fine_retriever = create_method_m5(
-        device='cpu',  # DTW uses CPU/Numba
-        sr=sr,
-        n_mfcc=dtw_cfg.get('n_mfcc', 13),
-        n_mels=dtw_cfg.get('n_mels', 64),
         n_fft=feat_cfg.get('n_fft', 2048),
         hop_length=feat_cfg.get('hop_length', 512),
     )
@@ -175,51 +189,79 @@ def run_twostage_experiments(config_path: str, output_dir: Path):
     if stage2_method not in {'dtw', 'ssim'}:
         raise ValueError("twostage.stage2 must be one of: 'dtw', 'ssim'")
 
+    k_values = yaml_config.get('evaluation', {}).get('k_values', [1, 5, 10, 20])
+
+    # Precompute labels + coarse features for all samples once.
+    console.print("\n[bold]Precomputing coarse features...[/bold]")
+    targets = torch.empty(len(dataset), dtype=torch.long)
+    coarse_features: List[torch.Tensor] = [None] * len(dataset)
+    for idx in range(len(dataset)):
+        s = get_sample(idx)
+        targets[idx] = int(s['target'])
+        coarse_features[idx] = coarse_retriever.extract_features(s['waveform'], s.get('sr', sr))
+    coarse_features_tensor = torch.stack(coarse_features, dim=0).to(device='cpu')
+    console.print("[green]✓[/green] Coarse features cached")
+
+    # Precompute fine features for all samples once.
+    fine_sequences: Optional[List[np.ndarray]] = None
+    ssim_features: Optional[List[torch.Tensor]] = None
+
+    dtw_constraint = str(dtw_cfg.get('constraint', 'none')).lower()
+    sakoe_radius = int(dtw_cfg.get('sakoe_chiba_radius', -1))
+    use_delta = bool(dtw_cfg.get('use_delta', False))
+
+    if stage2_method == 'dtw':
+        console.print("\n[bold]Precomputing DTW MFCC sequences...[/bold]")
+        fine_extractor = create_method_m5(
+            device='cpu',
+            sr=sr,
+            n_mfcc=dtw_cfg.get('n_mfcc', 13),
+            n_mels=dtw_cfg.get('n_mels', 64),
+            n_fft=feat_cfg.get('n_fft', 2048),
+            hop_length=feat_cfg.get('hop_length', 512),
+            sakoe_chiba_radius=sakoe_radius,
+            constraint=dtw_constraint,
+            use_delta=use_delta,
+        )
+
+        fine_sequences = [None] * len(dataset)
+        for idx in range(len(dataset)):
+            s = get_sample(idx)
+            seq = fine_extractor.extract_features(s['waveform'], s.get('sr', sr)).numpy()
+            fine_sequences[idx] = np.ascontiguousarray(seq, dtype=np.float32)
+        console.print("[green]✓[/green] DTW sequences cached")
+    else:
+        # SSIM stage2 (CPU by default)
+        console.print("\n[bold]Precomputing SSIM features...[/bold]")
+        ssim_device = compute_device
+        ssim_extractor = create_ssim_retriever(
+            device=ssim_device,
+            sr=sr,
+            n_mels=feat_cfg.get('n_mels', 128),
+            n_fft=feat_cfg.get('n_fft', 2048),
+            hop_length=feat_cfg.get('hop_length', 512),
+        )
+        ssim_features = [None] * len(dataset)
+        for idx in range(len(dataset)):
+            s = get_sample(idx)
+            ssim_features[idx] = ssim_extractor.extract_features(s['waveform'], s.get('sr', sr))
+        console.print("[green]✓[/green] SSIM features cached")
+
     results = {}
-    queries_per_fold = len(dataset) // 5
+    queries_per_fold = max(1, max(len(fold_splits[f][2]) for f in folds))
 
-    # First, run baseline methods
-    console.print("\n[bold cyan]Running Baseline Methods[/bold cyan]")
+    # Run baselines + two-stage sweep in one pass per fold using cached features.
+    console.print("\n[bold cyan]Running Baseline + Two-Stage Sweep[/bold cyan]")
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=30),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
-        # M1 baseline
-        task = progress.add_task("[cyan]M1 (Coarse)", total=len(folds) * queries_per_fold)
-        m1_fold_metrics = []
-        for fold in folds:
-            query_samples, gallery_samples = dataset.get_query_gallery_split(fold)
-            metrics = evaluate_retriever(coarse_retriever, query_samples, gallery_samples, progress, task)
-            m1_fold_metrics.append(metrics)
+    from src.retrieval.dtw_retriever import (
+        _dtw_distance_batch_numba,
+        _dtw_distance_itakura,
+        _fastdtw_recursive,
+    )
 
-        m1_results = {
-            'mean': {k: float(np.mean([m[k] for m in m1_fold_metrics])) for k in m1_fold_metrics[0].keys()},
-            'std': {k: float(np.std([m[k] for m in m1_fold_metrics])) for k in m1_fold_metrics[0].keys()},
-        }
-        results['M1_baseline'] = m1_results
-
-        # M5 baseline (on small subset due to speed)
-        task = progress.add_task("[cyan]M5 (Fine)", total=len(folds) * queries_per_fold)
-        m5_fold_metrics = []
-        for fold in folds:
-            query_samples, gallery_samples = dataset.get_query_gallery_split(fold)
-            metrics = evaluate_retriever(fine_retriever, query_samples, gallery_samples, progress, task)
-            m5_fold_metrics.append(metrics)
-
-        m5_results = {
-            'mean': {k: float(np.mean([m[k] for m in m5_fold_metrics])) for k in m5_fold_metrics[0].keys()},
-            'std': {k: float(np.std([m[k] for m in m5_fold_metrics])) for k in m5_fold_metrics[0].keys()},
-        }
-        results['M5_baseline'] = m5_results
-
-    # Run two-stage with different N
-    console.print("\n[bold cyan]Running Two-Stage Retrieval[/bold cyan]")
+    m1_fold_metrics: List[Dict[str, float]] = []
+    fine_fold_metrics: List[Dict[str, float]] = []
+    twostage_fold_metrics: Dict[int, List[Dict[str, float]]] = {n: [] for n in n_values}
 
     with Progress(
         SpinnerColumn(),
@@ -230,59 +272,174 @@ def run_twostage_experiments(config_path: str, output_dir: Path):
         TimeRemainingColumn(),
         console=console,
     ) as progress:
-        total = len(n_values) * len(folds) * queries_per_fold
-        task = progress.add_task("[cyan]Two-Stage", total=total)
+        total_queries = sum(len(fold_splits[f][2]) for f in folds)
+        total = total_queries * (len(n_values) + 2)
+        task = progress.add_task("[cyan]Two-Stage Sweep", total=total)
 
-        for n in n_values:
-            progress.update(task, description=f"[cyan]Two-Stage N={n}")
+        for fold in folds:
+            query_indices, gallery_indices, query_samples, gallery_samples = fold_splits[fold]
 
-            fold_metrics = []
-            for fold in folds:
-                query_samples, gallery_samples = dataset.get_query_gallery_split(fold)
+            gallery_features = coarse_features_tensor[gallery_indices]
+            gallery_labels = targets[gallery_indices]
+            gallery_size = len(gallery_indices)
+            gallery_indices_np = np.asarray(gallery_indices, dtype=np.int64)
 
-                # Create fresh retrievers for each fold
-                coarse = create_method_m1(
-                    device=device,
-                    sr=sr,
-                    n_mfcc=feat_cfg.get('n_mfcc', 20),
-                    n_mels=feat_cfg.get('n_mels', 128),
-                    n_fft=feat_cfg.get('n_fft', 2048),
-                    hop_length=feat_cfg.get('hop_length', 512),
+            if stage2_method == 'dtw':
+                assert fine_sequences is not None
+                gallery_fine = [fine_sequences[i] for i in gallery_indices]
+                gallery_tensor = None
+            else:
+                assert ssim_features is not None
+                gallery_fine = [ssim_features[i] for i in gallery_indices]
+                gallery_tensor = torch.stack(gallery_fine, dim=0)
+
+            # Per-fold accumulators
+            m1_all: List[Dict[str, float]] = []
+            fine_all: List[Dict[str, float]] = []
+            twostage_all: Dict[int, List[Dict[str, float]]] = {n: [] for n in n_values}
+
+            stage1_time = 0.0
+            stage2_full_time = 0.0
+
+            for query in query_samples:
+                q_idx = int(query.get('idx'))
+                q_label = int(query.get('target'))
+                num_relevant = int((gallery_labels == q_label).sum().item())
+
+                # Stage 1: coarse ranking
+                t0 = time.perf_counter()
+                coarse_distances = coarse_retriever.compute_distance(
+                    coarse_features_tensor[q_idx],
+                    gallery_features,
                 )
+                coarse_order = torch.argsort(coarse_distances, stable=True)
+                stage1_time += time.perf_counter() - t0
+
+                coarse_order_np = coarse_order.detach().cpu().numpy()
+
+                # Baseline (coarse only)
+                retrieved_labels_m1 = gallery_labels[coarse_order]
+                m1_all.append(
+                    compute_all_metrics(
+                        retrieved_labels_m1,
+                        q_label,
+                        num_relevant=num_relevant,
+                        k_values=k_values,
+                    )
+                )
+                progress.update(task, advance=1)
+
+                # Stage 2: fine distances over the full gallery (computed once per query)
+                t1 = time.perf_counter()
                 if stage2_method == 'dtw':
-                    fine = create_method_m5(
-                        device='cpu',  # DTW uses CPU/Numba
-                        sr=sr,
-                        n_mfcc=dtw_cfg.get('n_mfcc', 13),
-                        n_mels=dtw_cfg.get('n_mels', 64),
-                        n_fft=feat_cfg.get('n_fft', 2048),
-                        hop_length=feat_cfg.get('hop_length', 512),
-                    )
+                    query_seq = fine_sequences[q_idx]
+                    if dtw_constraint == 'itakura':
+                        fine_distances = np.array(
+                            [_dtw_distance_itakura(query_seq, g) for g in gallery_fine],
+                            dtype=np.float32,
+                        )
+                    elif dtw_constraint == 'fastdtw':
+                        fastdtw_radius = int(dtw_cfg.get('fastdtw_radius', 10))
+                        fine_distances = np.array(
+                            [_fastdtw_recursive(query_seq, g, fastdtw_radius) for g in gallery_fine],
+                            dtype=np.float32,
+                        )
+                    else:
+                        radius = sakoe_radius if dtw_constraint == 'sakoe_chiba' else -1
+                        fine_distances = _dtw_distance_batch_numba(query_seq, gallery_fine, radius).astype(np.float32)
                 else:
-                    fine = create_ssim_retriever(
-                        device='cpu',
-                        sr=sr,
-                        n_mels=feat_cfg.get('n_mels', 128),
-                        n_fft=feat_cfg.get('n_fft', 2048),
-                        hop_length=feat_cfg.get('hop_length', 512),
+                    # SSIM
+                    query_feat = ssim_features[q_idx]
+                    distances_t = ssim_extractor.compute_distance(query_feat, gallery_tensor)
+                    fine_distances = distances_t.detach().cpu().numpy().astype(np.float32)
+
+                stage2_full_time += time.perf_counter() - t1
+
+                # Fine-only baseline
+                fine_order = np.argsort(fine_distances)
+                retrieved_labels_fine = gallery_labels[torch.from_numpy(fine_order).long()]
+                fine_all.append(
+                    compute_all_metrics(
+                        retrieved_labels_fine,
+                        q_label,
+                        num_relevant=num_relevant,
+                        k_values=k_values,
                     )
-
-                twostage = create_twostage_retriever(
-                    coarse_retriever=coarse,
-                    fine_retriever=fine,
-                    top_n=n,
                 )
+                progress.update(task, advance=1)
 
-                metrics = evaluate_retriever(twostage, query_samples, gallery_samples, progress, task)
-                fold_metrics.append(metrics)
+                # Two-stage: re-rank coarse top-N using fine distances
+                for n in n_values:
+                    cand_pos = coarse_order_np[:n]
+                    cand_dist = fine_distances[cand_pos]
+                    rerank = np.argsort(cand_dist)
+                    reranked_pos = cand_pos[rerank]
 
-            results[f'TwoStage_N{n}'] = {
-                'n': n,
-                'mean': {k: float(np.mean([m[k] for m in fold_metrics])) for k in fold_metrics[0].keys()},
-                'std': {k: float(np.std([m[k] for m in fold_metrics])) for k in fold_metrics[0].keys()},
-            }
+                    # Build a full-length ranking: reranked top-N, then the remaining items
+                    # in their original coarse order. Metrics like AP/mAP require the full
+                    # gallery ranking so the denominator uses the true #relevant in gallery.
+                    if n < gallery_size:
+                        full_order = np.concatenate([reranked_pos, coarse_order_np[n:]], axis=0)
+                    else:
+                        full_order = reranked_pos
 
-            logger.info(f"N={n}: hit@10={results[f'TwoStage_N{n}']['mean'].get('hit@10', 0):.4f}")
+                    retrieved_labels_twostage = gallery_labels[torch.from_numpy(full_order).long()]
+                    twostage_all[n].append(
+                        compute_all_metrics(
+                            retrieved_labels_twostage,
+                            q_label,
+                            num_relevant=num_relevant,
+                            k_values=k_values,
+                        )
+                    )
+                    progress.update(task, advance=1)
+
+            # Aggregate per fold
+            def agg_mean(all_m: List[Dict[str, float]]) -> Dict[str, float]:
+                agg = aggregate_metrics(all_m)
+                return {k: v['mean'] for k, v in agg.items() if isinstance(v, dict) and 'mean' in v}
+
+            fold_m1 = agg_mean(m1_all)
+            fold_fine = agg_mean(fine_all)
+
+            n_queries = max(1, len(query_samples))
+            avg_stage1_ms = stage1_time / n_queries * 1000
+            avg_stage2_full_ms = stage2_full_time / n_queries * 1000
+
+            fold_m1['avg_query_time_ms'] = avg_stage1_ms
+            fold_fine['avg_query_time_ms'] = avg_stage2_full_ms
+
+            m1_fold_metrics.append(fold_m1)
+            fine_fold_metrics.append(fold_fine)
+
+            for n in n_values:
+                fold_twostage = agg_mean(twostage_all[n])
+                # Estimated time scales ~linearly with #candidates
+                fold_twostage['avg_query_time_ms'] = avg_stage1_ms + avg_stage2_full_ms * (n / max(1, gallery_size))
+                twostage_fold_metrics[n].append(fold_twostage)
+
+    # Final aggregation across folds
+    def mean_std(metrics_per_fold: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+        keys = metrics_per_fold[0].keys() if metrics_per_fold else []
+        return {
+            'mean': {k: float(np.mean([m.get(k, 0.0) for m in metrics_per_fold])) for k in keys},
+            'std': {k: float(np.std([m.get(k, 0.0) for m in metrics_per_fold])) for k in keys},
+        }
+
+    m1_results = mean_std(m1_fold_metrics)
+    results['M1_baseline'] = m1_results
+
+    fine_results = mean_std(fine_fold_metrics)
+    results['M5_baseline' if stage2_method == 'dtw' else 'SSIM_baseline'] = fine_results
+
+    for n in n_values:
+        fold_metrics = twostage_fold_metrics[n]
+        results[f'TwoStage_N{n}'] = {
+            'n': n,
+            'mean': {k: float(np.mean([m.get(k, 0.0) for m in fold_metrics])) for k in fold_metrics[0].keys()},
+            'std': {k: float(np.std([m.get(k, 0.0) for m in fold_metrics])) for k in fold_metrics[0].keys()},
+        }
+        logger.info(f"N={n}: hit@10={results[f'TwoStage_N{n}']['mean'].get('hit@10', 0):.4f}")
 
     # Display results
     console.print("\n")
@@ -303,11 +460,11 @@ def run_twostage_experiments(config_path: str, output_dir: Path):
         style="dim"
     )
     table.add_row(
-        "M5 (Fine only)",
+        "DTW (Fine only)" if stage2_method == 'dtw' else "SSIM (Fine only)",
         "-",
-        f"{m5_results['mean'].get('hit@10', 0):.4f}",
-        f"{m5_results['mean'].get('map@20', 0):.4f}",
-        f"{m5_results['mean'].get('avg_query_time_ms', 0):.2f}",
+        f"{fine_results['mean'].get('hit@10', 0):.4f}",
+        f"{fine_results['mean'].get('map@20', 0):.4f}",
+        f"{fine_results['mean'].get('avg_query_time_ms', 0):.2f}",
         style="dim"
     )
 

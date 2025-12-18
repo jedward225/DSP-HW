@@ -17,9 +17,10 @@ Compatibility Notes:
 
 import torch
 import numpy as np
-from typing import Optional, List, Dict, Literal
+from typing import Optional, List, Dict, Literal, Tuple
 
 from src.retrieval.base import BaseRetriever
+from src.dsp_core import mfcc
 
 
 class PartialQueryRetriever(BaseRetriever):
@@ -41,6 +42,7 @@ class PartialQueryRetriever(BaseRetriever):
         query_duration_s: float = 1.0,
         stride_s: float = 0.5,
         aggregation: Literal['min', 'mean', 'max'] = 'min',
+        fast_windowing: bool = False,
         name: str = "PartialQueryRetriever",
         device: str = 'cpu',
         sr: int = 22050,
@@ -63,6 +65,7 @@ class PartialQueryRetriever(BaseRetriever):
         self.query_duration_s = query_duration_s
         self.stride_s = stride_s
         self.aggregation = aggregation
+        self.fast_windowing = fast_windowing
 
         # Compute lengths in samples
         self.query_length = int(query_duration_s * sr)
@@ -70,7 +73,28 @@ class PartialQueryRetriever(BaseRetriever):
 
         # Gallery storage
         self._gallery_samples: Optional[List[dict]] = None
-        self._gallery_window_features: List[List[torch.Tensor]] = []
+        # Per-gallery-item window features (list of tensors shaped (n_windows, D)).
+        self._gallery_window_features: List[torch.Tensor] = []
+
+        # Cache window features by (sample_idx, sample_sr) so repeated builds across
+        # folds don't recompute MFCCs for the same audio.
+        self._window_feature_cache: Dict[Tuple[int, int], torch.Tensor] = {}
+
+        # Flattened view for fast batched distance computation.
+        self._flat_window_features: Optional[torch.Tensor] = None  # (total_windows, D)
+        self._flat_window_owner: Optional[torch.Tensor] = None  # (total_windows,)
+
+    def _is_fast_pool_mfcc(self) -> bool:
+        """Return True if we can use a fast MFCC windowing implementation."""
+        return bool(
+            self.fast_windowing
+            and getattr(self.base_retriever, 'feature_type', None) == 'mfcc'
+            and getattr(self.base_retriever, 'pooling', None) == 'mean_std'
+            and hasattr(self.base_retriever, 'n_mfcc')
+            and hasattr(self.base_retriever, 'n_fft')
+            and hasattr(self.base_retriever, 'hop_length')
+            and hasattr(self.base_retriever, 'n_mels')
+        )
 
     def extract_features(
         self,
@@ -123,9 +147,116 @@ class PartialQueryRetriever(BaseRetriever):
             query_length = max(1, int(self.query_duration_s * sample_sr))
             stride_length = max(1, int(self.stride_s * sample_sr))
 
+            sample_idx = sample.get('idx', None)
+            cache_key: Optional[Tuple[int, int]] = None
+            if sample_idx is not None:
+                cache_key = (int(sample_idx), int(sample_sr))
+
+            if cache_key is not None and cache_key in self._window_feature_cache:
+                self._gallery_window_features.append(self._window_feature_cache[cache_key])
+                continue
+
             # Extract features from sliding windows
-            window_features = []
+            window_features: List[torch.Tensor] = []
             total_samples = len(waveform)
+
+            if self._is_fast_pool_mfcc():
+                n_mfcc = int(getattr(self.base_retriever, 'n_mfcc'))
+                n_fft = int(getattr(self.base_retriever, 'n_fft'))
+                hop_length = int(getattr(self.base_retriever, 'hop_length'))
+                n_mels = int(getattr(self.base_retriever, 'n_mels'))
+                fmin = float(getattr(self.base_retriever, 'fmin', 0.0))
+                fmax = getattr(self.base_retriever, 'fmax', None)
+                fmax = None if fmax is None else float(fmax)
+                window = str(getattr(self.base_retriever, 'window', 'hann'))
+
+                # Compute MFCC sequence once for the full audio.
+                # Cache on the base retriever so multiple PartialQueryRetriever instances
+                # (different durations/strides) can reuse it.
+                mfcc_seq = None
+                if sample_idx is not None:
+                    mfcc_cache = getattr(self.base_retriever, '_partial_mfcc_seq_cache', None)
+                    if mfcc_cache is None:
+                        mfcc_cache = {}
+                        setattr(self.base_retriever, '_partial_mfcc_seq_cache', mfcc_cache)
+
+                    mfcc_key = (
+                        int(sample_idx),
+                        int(sample_sr),
+                        n_mfcc,
+                        n_fft,
+                        hop_length,
+                        n_mels,
+                        float(fmin),
+                        None if fmax is None else float(fmax),
+                        window,
+                    )
+
+                    mfcc_seq = mfcc_cache.get(mfcc_key)
+                    if mfcc_seq is None:
+                        mfcc_seq = mfcc(
+                            y=waveform,
+                            sr=sample_sr,
+                            n_mfcc=n_mfcc,
+                            n_fft=n_fft,
+                            hop_length=hop_length,
+                            n_mels=n_mels,
+                            fmin=fmin,
+                            fmax=fmax,
+                            window=window,
+                        ).astype(np.float32, copy=False)
+                        mfcc_cache[mfcc_key] = mfcc_seq
+
+                if mfcc_seq is None:
+                    mfcc_seq = mfcc(
+                        y=waveform,
+                        sr=sample_sr,
+                        n_mfcc=n_mfcc,
+                        n_fft=n_fft,
+                        hop_length=hop_length,
+                        n_mels=n_mels,
+                        fmin=fmin,
+                        fmax=fmax,
+                        window=window,
+                    ).astype(np.float32, copy=False)
+
+                n_frames = int(mfcc_seq.shape[1])
+                pad = n_fft // 2
+
+                starts = np.arange(0, max(1, total_samples - query_length + 1), stride_length)
+                ends = starts + query_length
+                ends = np.minimum(ends, total_samples)
+
+                start_frames = (starts + pad + hop_length - 1) // hop_length
+                end_frames = (ends + pad + hop_length - 1) // hop_length
+                start_frames = np.clip(start_frames, 0, n_frames)
+                end_frames = np.clip(end_frames, 0, n_frames)
+                frame_counts = np.maximum(1, end_frames - start_frames)
+
+                # Cumulative sums for fast window stats
+                cumsum = np.cumsum(mfcc_seq, axis=1)
+                cumsum_sq = np.cumsum(mfcc_seq ** 2, axis=1)
+                cumsum = np.concatenate([np.zeros((n_mfcc, 1), dtype=mfcc_seq.dtype), cumsum], axis=1)
+                cumsum_sq = np.concatenate([np.zeros((n_mfcc, 1), dtype=mfcc_seq.dtype), cumsum_sq], axis=1)
+
+                sums = cumsum[:, end_frames] - cumsum[:, start_frames]
+                sums_sq = cumsum_sq[:, end_frames] - cumsum_sq[:, start_frames]
+
+                means = sums / frame_counts
+                var_num = sums_sq - (sums ** 2) / frame_counts
+                denom = np.maximum(1, frame_counts - 1)
+                vars_unbiased = var_num / denom
+                vars_unbiased = np.where(frame_counts > 1, vars_unbiased, 0.0)
+                stds = np.sqrt(np.maximum(vars_unbiased, 0.0))
+
+                feats = np.concatenate([means, stds], axis=0).T  # (n_windows, 2*n_mfcc)
+                window_tensor = torch.from_numpy(feats).float().to(self.device)
+                self._gallery_window_features.append(window_tensor)
+
+                if cache_key is not None:
+                    self._window_feature_cache[cache_key] = window_tensor
+
+                continue
 
             # Slide window across audio
             for start in range(0, total_samples - query_length + 1, stride_length):
@@ -134,16 +265,44 @@ class PartialQueryRetriever(BaseRetriever):
                 feat = self.base_retriever.extract_features(window_tensor, sample_sr)
                 window_features.append(feat)
 
-            if window_features:
-                self._gallery_window_features.append(window_features)
-            else:
+            if not window_features:
                 # Audio shorter than query length - use full audio
                 full_tensor = torch.from_numpy(waveform).float().to(self.device)
                 feat = self.base_retriever.extract_features(full_tensor, sample_sr)
-                self._gallery_window_features.append([feat])
+                window_features = [feat]
+
+            # Stack to (n_windows, D)
+            window_tensor = torch.stack(window_features, dim=0)
+            self._gallery_window_features.append(window_tensor)
+
+            if cache_key is not None:
+                self._window_feature_cache[cache_key] = window_tensor
 
         # For compatibility with base class
         self._gallery_features = None
+
+        # Build flattened view for fast distance computation.
+        flat_feats: List[torch.Tensor] = []
+        flat_owner: List[torch.Tensor] = []
+        for gallery_idx, window_tensor in enumerate(self._gallery_window_features):
+            if window_tensor.dim() == 1:
+                window_tensor = window_tensor.unsqueeze(0)
+            flat_feats.append(window_tensor)
+            flat_owner.append(
+                torch.full(
+                    (window_tensor.shape[0],),
+                    gallery_idx,
+                    device=window_tensor.device,
+                    dtype=torch.long,
+                )
+            )
+
+        if flat_feats:
+            self._flat_window_features = torch.cat(flat_feats, dim=0)
+            self._flat_window_owner = torch.cat(flat_owner, dim=0)
+        else:
+            self._flat_window_features = None
+            self._flat_window_owner = None
 
     def compute_distance(
         self,
@@ -155,28 +314,65 @@ class PartialQueryRetriever(BaseRetriever):
 
         For each gallery item, find the window with minimum distance to query.
         """
-        distances = []
+        if self._flat_window_features is not None and self._flat_window_owner is not None:
+            window_dists = self.base_retriever.compute_distance(query_features, self._flat_window_features)
+            window_dists = window_dists.flatten()
 
-        for window_feats in self._gallery_window_features:
-            # Compute distance to each window
-            window_dists = []
-            for wf in window_feats:
-                # Use base retriever's distance computation
-                # Need to handle the case where it expects batch dimension
-                if len(wf.shape) == 1:
-                    wf = wf.unsqueeze(0)
-                dist = self.base_retriever.compute_distance(query_features, wf)
-                window_dists.append(dist.item())
+            n_gallery = len(self._gallery_window_features)
+            owners = self._flat_window_owner
 
-            # Aggregate across windows
             if self.aggregation == 'min':
-                distances.append(min(window_dists))
-            elif self.aggregation == 'mean':
-                distances.append(sum(window_dists) / len(window_dists))
-            elif self.aggregation == 'max':
-                distances.append(max(window_dists))
+                distances = torch.full(
+                    (n_gallery,),
+                    float('inf'),
+                    device=window_dists.device,
+                    dtype=window_dists.dtype,
+                )
+                distances.scatter_reduce_(0, owners, window_dists, reduce='amin', include_self=True)
+                return distances
 
-        return torch.tensor(distances, device=query_features.device, dtype=query_features.dtype)
+            if self.aggregation == 'max':
+                distances = torch.full(
+                    (n_gallery,),
+                    -float('inf'),
+                    device=window_dists.device,
+                    dtype=window_dists.dtype,
+                )
+                distances.scatter_reduce_(0, owners, window_dists, reduce='amax', include_self=True)
+                return distances
+
+            if self.aggregation == 'mean':
+                sums = torch.zeros(
+                    (n_gallery,),
+                    device=window_dists.device,
+                    dtype=window_dists.dtype,
+                )
+                sums.scatter_add_(0, owners, window_dists)
+                counts = torch.zeros(
+                    (n_gallery,),
+                    device=window_dists.device,
+                    dtype=window_dists.dtype,
+                )
+                counts.scatter_add_(0, owners, torch.ones_like(window_dists))
+                return sums / counts.clamp_min(1.0)
+
+        # Fallback (should be rare): compute per-gallery-item.
+        distances: List[torch.Tensor] = []
+        for window_tensor in self._gallery_window_features:
+            if window_tensor.dim() == 1:
+                window_tensor = window_tensor.unsqueeze(0)
+            window_dists = self.base_retriever.compute_distance(query_features, window_tensor).flatten()
+
+            if self.aggregation == 'min':
+                distances.append(window_dists.min())
+            elif self.aggregation == 'mean':
+                distances.append(window_dists.mean())
+            elif self.aggregation == 'max':
+                distances.append(window_dists.max())
+            else:
+                raise ValueError(f"Unknown aggregation: {self.aggregation}")
+
+        return torch.stack(distances, dim=0).to(device=query_features.device, dtype=query_features.dtype)
 
     def retrieve(
         self,
@@ -185,6 +381,7 @@ class PartialQueryRetriever(BaseRetriever):
         return_distances: bool = False,
         crop_mode: str = 'center',
         query_sr: int = None,
+        query_idx: Optional[int] = None,
     ):
         """
         Retrieve using partial query matching.
@@ -209,21 +406,71 @@ class PartialQueryRetriever(BaseRetriever):
         sr = query_sr if query_sr is not None else self.sr
         query_length = max(1, int(self.query_duration_s * sr))
 
+        crop_start = 0
+
         # Crop query to specified duration
         if len(query_waveform) > query_length:
             if crop_mode == 'center':
-                start = (len(query_waveform) - query_length) // 2
+                crop_start = (len(query_waveform) - query_length) // 2
             elif crop_mode == 'start':
-                start = 0
+                crop_start = 0
             elif crop_mode == 'random':
-                start = np.random.randint(0, len(query_waveform) - query_length + 1)
+                crop_start = int(np.random.randint(0, len(query_waveform) - query_length + 1))
             else:
-                start = (len(query_waveform) - query_length) // 2
+                crop_start = (len(query_waveform) - query_length) // 2
 
-            query_waveform = query_waveform[start:start + query_length]
+            query_waveform = query_waveform[crop_start:crop_start + query_length]
 
         # Extract query features
-        query_features = self.extract_features(query_waveform, sr)
+        query_features = None
+        if self._is_fast_pool_mfcc() and query_idx is not None:
+            mfcc_cache = getattr(self.base_retriever, '_partial_mfcc_seq_cache', None)
+            if mfcc_cache is not None:
+                n_mfcc = int(getattr(self.base_retriever, 'n_mfcc'))
+                n_fft = int(getattr(self.base_retriever, 'n_fft'))
+                hop_length = int(getattr(self.base_retriever, 'hop_length'))
+                n_mels = int(getattr(self.base_retriever, 'n_mels'))
+                fmin = float(getattr(self.base_retriever, 'fmin', 0.0))
+                fmax = getattr(self.base_retriever, 'fmax', None)
+                fmax = None if fmax is None else float(fmax)
+                window = str(getattr(self.base_retriever, 'window', 'hann'))
+
+                mfcc_key = (
+                    int(query_idx),
+                    int(sr),
+                    n_mfcc,
+                    n_fft,
+                    hop_length,
+                    n_mels,
+                    float(fmin),
+                    None if fmax is None else float(fmax),
+                    window,
+                )
+
+                mfcc_seq = mfcc_cache.get(mfcc_key)
+                if mfcc_seq is not None:
+                    n_frames = int(mfcc_seq.shape[1])
+                    pad = n_fft // 2
+                    start_frame = int((crop_start + pad + hop_length - 1) // hop_length)
+                    end_frame = int((crop_start + query_length + pad + hop_length - 1) // hop_length)
+                    start_frame = int(np.clip(start_frame, 0, n_frames))
+                    end_frame = int(np.clip(end_frame, 0, n_frames))
+
+                    if end_frame <= start_frame:
+                        end_frame = min(n_frames, start_frame + 1)
+
+                    seg = mfcc_seq[:, start_frame:end_frame]
+                    mean = seg.mean(axis=1)
+                    if seg.shape[1] > 1:
+                        std = seg.std(axis=1, ddof=1)
+                    else:
+                        std = np.zeros_like(mean)
+
+                    pooled = np.concatenate([mean, std], axis=0)
+                    query_features = torch.from_numpy(pooled).float().to(self.device)
+
+        if query_features is None:
+            query_features = self.extract_features(query_waveform, sr)
 
         # Compute distances
         distances = self.compute_distance(query_features, None)
@@ -245,6 +492,7 @@ class PartialQueryRetriever(BaseRetriever):
         k: int = None,
         crop_mode: str = 'center',
         query_sr: int = None,
+        query_idx: Optional[int] = None,
     ):
         """
         Retrieve and return labels of retrieved items.
@@ -259,7 +507,13 @@ class PartialQueryRetriever(BaseRetriever):
         Returns:
             Tuple of (retrieved_indices, retrieved_labels)
         """
-        indices = self.retrieve(query_waveform, k=k, crop_mode=crop_mode, query_sr=query_sr)
+        indices = self.retrieve(
+            query_waveform,
+            k=k,
+            crop_mode=crop_mode,
+            query_sr=query_sr,
+            query_idx=query_idx,
+        )
         labels = self._gallery_labels[indices]
         return indices, labels
 
@@ -302,17 +556,13 @@ class PartialQueryRetriever(BaseRetriever):
         query_features = self.extract_features(query_waveform, sr)
 
         # Get window features for specified gallery item
-        window_feats = self._gallery_window_features[gallery_idx]
+        window_tensor = self._gallery_window_features[gallery_idx]
+        if window_tensor.dim() == 1:
+            window_tensor = window_tensor.unsqueeze(0)
 
-        # Compute distance to each window
-        window_dists = []
-        for wf in window_feats:
-            if len(wf.shape) == 1:
-                wf = wf.unsqueeze(0)
-            dist = self.base_retriever.compute_distance(query_features, wf)
-            window_dists.append(dist.item())
-
-        window_dists = np.array(window_dists)
+        # Compute distance to each window (batched)
+        window_dists = self.base_retriever.compute_distance(query_features, window_tensor).detach().flatten()
+        window_dists = window_dists.cpu().numpy()
 
         # Get top-k windows
         top_k_indices = np.argsort(window_dists)[:k_windows]
@@ -341,6 +591,8 @@ class PartialQueryRetriever(BaseRetriever):
         super().clear_gallery()
         self._gallery_samples = None
         self._gallery_window_features = []
+        self._flat_window_features = None
+        self._flat_window_owner = None
 
     @property
     def gallery_size(self) -> int:
@@ -353,6 +605,7 @@ def create_partial_retriever(
     query_duration_s: float = 1.0,
     stride_s: float = 0.5,
     aggregation: str = 'min',
+    fast_windowing: bool = False,
     **kwargs
 ) -> PartialQueryRetriever:
     """
@@ -372,6 +625,7 @@ def create_partial_retriever(
         query_duration_s=query_duration_s,
         stride_s=stride_s,
         aggregation=aggregation,
+        fast_windowing=fast_windowing,
         name=f"Partial_{query_duration_s}s",
         device=base_retriever.device,
         sr=base_retriever.sr,

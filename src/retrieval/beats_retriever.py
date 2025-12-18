@@ -89,13 +89,23 @@ class BEATsRetriever(BaseRetriever):
         from BEATs import BEATs, BEATsConfig
 
         # Load checkpoint
-        checkpoint = torch.load(self.checkpoint_path, map_location='cpu')
+        # Use weights_only=False for PyTorch 2.6+ compatibility
+        # BEATs checkpoints contain custom objects that need unpickling
+        checkpoint = torch.load(self.checkpoint_path, map_location='cpu', weights_only=False)
 
         cfg = BEATsConfig(checkpoint['cfg'])
         self.beats_model = BEATs(cfg)
         self.beats_model.load_state_dict(checkpoint['model'])
         self.beats_model.to(self.device)
         self.beats_model.eval()
+
+        # For retrieval we want encoder embeddings. Some checkpoints are fine-tuned and
+        # include a classification head; BEATs.extract_features() would then return class
+        # probabilities instead of embeddings, so we drop the head.
+        if getattr(self.beats_model, 'predictor', None) is not None:
+            self.beats_model.predictor = None
+            if hasattr(self.beats_model, 'predictor_dropout'):
+                self.beats_model.predictor_dropout = None
 
     def _resample_audio(self, waveform: np.ndarray, orig_sr: int) -> np.ndarray:
         """Resample audio to BEATs' required 16kHz."""
@@ -144,21 +154,29 @@ class BEATsRetriever(BaseRetriever):
         # Extract features
         with torch.no_grad():
             # BEATs extract_features returns (features, padding_mask)
-            # features shape: (batch, time, 768)
+            # If the checkpoint is fine-tuned, BEATs returns class probabilities
+            # with shape (batch, num_classes). Otherwise it returns embeddings with
+            # shape (batch, time, dim).
             features, _ = self.beats_model.extract_features(audio_tensor)
 
-            # Pool across time dimension
-            if self.pooling == 'mean':
-                embedding = features.mean(dim=1)  # (batch, 768)
-            elif self.pooling == 'max':
-                embedding = features.max(dim=1)[0]  # (batch, 768)
-            elif self.pooling == 'cls':
-                # Use first token as CLS
-                embedding = features[:, 0, :]  # (batch, 768)
+            if features.dim() == 3:
+                # Pool across time dimension
+                if self.pooling == 'mean':
+                    embedding = features.mean(dim=1)
+                elif self.pooling == 'max':
+                    embedding = features.max(dim=1)[0]
+                elif self.pooling == 'cls':
+                    # Use first token as CLS
+                    embedding = features[:, 0, :]
+                else:
+                    raise ValueError(f"Unknown pooling method: {self.pooling}")
+            elif features.dim() == 2:
+                # Already pooled (e.g., fine-tuned checkpoints return class probabilities)
+                embedding = features
             else:
-                raise ValueError(f"Unknown pooling method: {self.pooling}")
+                raise ValueError(f"Unexpected BEATs feature shape: {tuple(features.shape)}")
 
-        # Return (768,) tensor
+        # Return (D,) tensor
         return embedding.squeeze(0)
 
     def compute_distance(
@@ -170,12 +188,21 @@ class BEATsRetriever(BaseRetriever):
         Compute cosine distance between query and gallery features.
 
         Args:
-            query_features: Query embedding (768,)
+            query_features: Query embedding (768,) or (1, 768)
             gallery_features: Gallery embeddings (N, 768)
 
         Returns:
             Cosine distances (N,)
         """
+        # Flatten to ensure 1D for query
+        query_features = query_features.flatten()
+
+        # Ensure gallery is 2D (N, D)
+        if gallery_features.dim() == 1:
+            gallery_features = gallery_features.unsqueeze(0)
+        elif gallery_features.dim() > 2:
+            gallery_features = gallery_features.view(-1, gallery_features.shape[-1])
+
         # L2 normalize
         query_norm = query_features / (query_features.norm() + 1e-10)
         gallery_norm = gallery_features / (gallery_features.norm(dim=1, keepdim=True) + 1e-10)

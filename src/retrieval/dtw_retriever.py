@@ -401,6 +401,9 @@ class DTWRetriever(BaseRetriever):
             delta2 = compute_delta(features.T, width=9, order=2).T
             features = np.concatenate([features, delta1, delta2], axis=1)
 
+        # Ensure contiguous memory layout for fast DTW (Numba) over sequences.
+        features = np.ascontiguousarray(features, dtype=np.float32)
+
         return torch.from_numpy(features).float()
 
     def build_gallery(
@@ -465,25 +468,24 @@ class DTWRetriever(BaseRetriever):
         Returns:
             Distance tensor (n_gallery,)
         """
-        query_np = query_features.numpy()
+        query_np = np.ascontiguousarray(query_features.detach().cpu().numpy())
 
         # Compute DTW distances based on constraint type
-        distances = np.zeros(len(self._gallery_sequences))
-
         if self.constraint == 'itakura':
-            # Use Itakura parallelogram constraint
+            distances = np.zeros(len(self._gallery_sequences), dtype=np.float32)
             for i, gallery_seq in enumerate(self._gallery_sequences):
                 distances[i] = _dtw_distance_itakura(query_np, gallery_seq)
-        elif self.constraint == 'fastdtw':
-            # Use FastDTW (O(N) approximate DTW)
+            return torch.from_numpy(distances).float()
+
+        if self.constraint == 'fastdtw':
+            distances = np.zeros(len(self._gallery_sequences), dtype=np.float32)
             for i, gallery_seq in enumerate(self._gallery_sequences):
                 distances[i] = _fastdtw_recursive(query_np, gallery_seq, self.fastdtw_radius)
-        else:
-            # Use Sakoe-Chiba band constraint or no constraint
-            sakoe_radius = self.sakoe_chiba_radius if self.constraint == 'sakoe_chiba' else -1
-            for i, gallery_seq in enumerate(self._gallery_sequences):
-                distances[i] = _dtw_distance_numba(query_np, gallery_seq, sakoe_radius)
+            return torch.from_numpy(distances).float()
 
+        # Default: exact DTW with optional Sakoe-Chiba band. Use Numba-parallel batch.
+        sakoe_radius = self.sakoe_chiba_radius if self.constraint == 'sakoe_chiba' else -1
+        distances = _dtw_distance_batch_numba(query_np, self._gallery_sequences, sakoe_radius).astype(np.float32)
         return torch.from_numpy(distances).float()
 
     def retrieve(

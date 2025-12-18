@@ -91,7 +91,17 @@ class CLAPRetriever(BaseRetriever):
             device=self.device,
             amodel=self.amodel
         )
-        self.clap_model.load_ckpt(ckpt=self.checkpoint_path, verbose=False)
+
+        # Workaround for PyTorch 2.6+ weights_only=True default
+        # CLAP checkpoints contain numpy scalars that need weights_only=False
+        import functools
+        original_load = torch.load
+        torch.load = functools.partial(original_load, weights_only=False)
+        try:
+            self.clap_model.load_ckpt(ckpt=self.checkpoint_path, verbose=False)
+        finally:
+            torch.load = original_load
+
         self.clap_model.eval()
 
     def _resample_audio(self, waveform: np.ndarray, orig_sr: int) -> np.ndarray:
@@ -155,12 +165,21 @@ class CLAPRetriever(BaseRetriever):
         Compute cosine distance between query and gallery features.
 
         Args:
-            query_features: Query embedding (512,)
+            query_features: Query embedding (512,) or (1, 512)
             gallery_features: Gallery embeddings (N, 512)
 
         Returns:
             Cosine distances (N,)
         """
+        # Flatten to ensure 1D for query
+        query_features = query_features.flatten()
+
+        # Ensure gallery is 2D (N, D)
+        if gallery_features.dim() == 1:
+            gallery_features = gallery_features.unsqueeze(0)
+        elif gallery_features.dim() > 2:
+            gallery_features = gallery_features.view(-1, gallery_features.shape[-1])
+
         # L2 normalize
         query_norm = query_features / (query_features.norm() + 1e-10)
         gallery_norm = gallery_features / (gallery_features.norm(dim=1, keepdim=True) + 1e-10)

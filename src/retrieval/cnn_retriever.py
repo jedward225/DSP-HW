@@ -62,7 +62,8 @@ class CNNRetriever(BaseRetriever):
         from src.models.cnn_classifier import AudioCNN
 
         # Load checkpoint
-        checkpoint = torch.load(self.model_path, map_location='cpu')
+        # Use weights_only=False for PyTorch 2.6+ compatibility
+        checkpoint = torch.load(self.model_path, map_location='cpu', weights_only=False)
 
         # Get model config from checkpoint if available
         config = checkpoint.get('config', {})
