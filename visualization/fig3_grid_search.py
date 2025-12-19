@@ -18,10 +18,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # Handle both module and direct execution imports
 try:
-    from .config import setup_style, save_figure, CATEGORY_COLORS
+    from .config import setup_style, save_figure, CATEGORY_COLORS, ci_half_width_from_std
     from .data_loader import load_grid_search_results
 except ImportError:
-    from config import setup_style, save_figure, CATEGORY_COLORS
+    from config import setup_style, save_figure, CATEGORY_COLORS, ci_half_width_from_std
     from data_loader import load_grid_search_results
 
 
@@ -281,11 +281,13 @@ def create_figure():
                 windows.append(window)
                 hit10_means.append(hit10)
 
-                # Calculate std from fold results if available
+                # Calculate 95% CI from fold results if available
                 if window in fold_results:
                     fold_vals = [fold_results[window][f].get('hit@10', 0) * 100
                                 for f in fold_results[window]]
-                    hit10_stds.append(np.std(fold_vals))
+                    std_val = np.std(fold_vals)
+                    # Convert std to 95% CI half-width: 1.96 * std / sqrt(n_folds)
+                    hit10_stds.append(ci_half_width_from_std(std_val / 100) * 100)
                 else:
                     hit10_stds.append(0)
 
