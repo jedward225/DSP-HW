@@ -155,45 +155,23 @@ def validate(model, dataloader, criterion, device):
     return total_loss / n_batches
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Train mel autoencoder')
-    parser.add_argument('--data_dir', type=str, required=True,
-                        help='Path to ESC-50 dataset')
-    parser.add_argument('--output_dir', type=str, default='models',
-                        help='Output directory for checkpoints')
-    parser.add_argument('--epochs', type=int, default=100,
-                        help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=32,
-                        help='Batch size')
-    parser.add_argument('--lr', type=float, default=1e-3,
-                        help='Learning rate')
-    parser.add_argument('--latent_dim', type=int, default=256,
-                        help='Latent dimension')
-    parser.add_argument('--val_fold', type=int, default=5,
-                        help='Fold to use for validation')
-    parser.add_argument('--device', type=str, default='cuda',
-                        help='Device (cuda or cpu)')
-    args = parser.parse_args()
+def train_fold(args, fold, device):
+    """Train model for a single fold."""
+    print(f"\n{'='*50}")
+    print(f"Training Fold {fold}")
+    print(f"{'='*50}")
 
-    # Setup device
-    if args.device == 'cuda' and not torch.cuda.is_available():
-        raise RuntimeError("CUDA device requested but not available")
-    device = torch.device(args.device)
-    print(f"Using device: {device}")
-
-    # Create output directory
     output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Create datasets
     print("Loading datasets...")
     train_dataset = MelSpectrogramDataset(
         args.data_dir,
-        exclude_fold=args.val_fold,
+        exclude_fold=fold,
     )
     val_dataset = MelSpectrogramDataset(
         args.data_dir,
-        fold=args.val_fold,
+        fold=fold,
     )
 
     train_loader = DataLoader(
@@ -241,9 +219,10 @@ def main():
 
         scheduler.step(val_loss)
 
-        print(f"Epoch {epoch+1}/{args.epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
+        if (epoch + 1) % 10 == 0:
+            print(f"Epoch {epoch+1}/{args.epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
 
-        # Save best model
+        # Save best model for this fold
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             checkpoint = {
@@ -251,35 +230,79 @@ def main():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
+                'fold': fold,
                 'config': {
                     'n_mels': 128,
                     'n_frames': 256,
                     'latent_dim': args.latent_dim,
                 },
             }
-            torch.save(checkpoint, output_dir / 'autoencoder_esc50_best.pt')
-            print(f"  -> Saved best model (val_loss: {val_loss:.6f})")
+            torch.save(checkpoint, output_dir / f'autoencoder_esc50_fold{fold}.pt')
 
-    # Save final model
-    checkpoint = {
-        'epoch': args.epochs,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'val_loss': val_loss,
-        'config': {
-            'n_mels': 128,
-            'n_frames': 256,
-            'latent_dim': args.latent_dim,
-        },
-    }
-    torch.save(checkpoint, output_dir / 'autoencoder_esc50_final.pt')
+    print(f"Fold {fold} - Best Val Loss: {best_val_loss:.6f}")
+    return best_val_loss, history
 
-    # Save training history
-    with open(output_dir / 'autoencoder_history.json', 'w') as f:
-        json.dump(history, f)
 
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.6f}")
-    print(f"Models saved to {output_dir}")
+def main():
+    parser = argparse.ArgumentParser(description='Train mel autoencoder with 5-fold CV')
+    parser.add_argument('--data_dir', type=str, required=True,
+                        help='Path to ESC-50 dataset')
+    parser.add_argument('--output_dir', type=str, default='models',
+                        help='Output directory for checkpoints')
+    parser.add_argument('--epochs', type=int, default=100,
+                        help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='Batch size')
+    parser.add_argument('--lr', type=float, default=1e-3,
+                        help='Learning rate')
+    parser.add_argument('--latent_dim', type=int, default=256,
+                        help='Latent dimension')
+    parser.add_argument('--folds', type=str, default='1,2,3,4,5',
+                        help='Folds to train (comma-separated)')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Device (cuda or cpu)')
+    args = parser.parse_args()
+
+    # Setup device
+    if args.device == 'cuda' and not torch.cuda.is_available():
+        raise RuntimeError("CUDA device requested but not available")
+    device = torch.device(args.device)
+    print(f"Using device: {device}")
+
+    # Create output directory
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse folds
+    folds = [int(f) for f in args.folds.split(',')]
+
+    # Train each fold
+    all_results = {}
+    all_histories = {}
+
+    for fold in folds:
+        best_loss, history = train_fold(args, fold, device)
+        all_results[f'fold{fold}'] = best_loss
+        all_histories[f'fold{fold}'] = history
+
+    # Summary
+    print("\n" + "=" * 50)
+    print("5-Fold Cross-Validation Results")
+    print("=" * 50)
+    losses = list(all_results.values())
+    for fold, loss in all_results.items():
+        print(f"{fold}: {loss:.6f}")
+    print(f"Mean: {np.mean(losses):.6f} ± {np.std(losses):.6f}")
+
+    # Save results
+    with open(output_dir / 'autoencoder_5fold_results.json', 'w') as f:
+        json.dump({
+            'results': all_results,
+            'mean': float(np.mean(losses)),
+            'std': float(np.std(losses)),
+        }, f, indent=2)
+
+    print(f"\nResults saved to {output_dir}")
 
 
 if __name__ == '__main__':

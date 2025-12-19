@@ -172,49 +172,23 @@ def validate_retrieval(model, train_loader, val_loader, device):
     return correct / total
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Train supervised contrastive encoder')
-    parser.add_argument('--data_dir', type=str, required=True,
-                        help='Path to ESC-50 dataset')
-    parser.add_argument('--output_dir', type=str, default='models',
-                        help='Output directory for checkpoints')
-    parser.add_argument('--epochs', type=int, default=200,
-                        help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=64,
-                        help='Batch size (larger is better for contrastive)')
-    parser.add_argument('--lr', type=float, default=1e-3,
-                        help='Learning rate')
-    parser.add_argument('--embed_dim', type=int, default=128,
-                        help='Embedding dimension')
-    parser.add_argument('--proj_dim', type=int, default=128,
-                        help='Projection dimension')
-    parser.add_argument('--temperature', type=float, default=0.07,
-                        help='Temperature for SupCon loss')
-    parser.add_argument('--val_fold', type=int, default=5,
-                        help='Fold to use for validation')
-    parser.add_argument('--device', type=str, default='cuda',
-                        help='Device (cuda or cpu)')
-    args = parser.parse_args()
+def train_fold(args, fold, device):
+    """Train model for a single fold."""
+    print(f"\n{'='*50}")
+    print(f"Training Fold {fold}")
+    print(f"{'='*50}")
 
-    # Setup device
-    if args.device == 'cuda' and not torch.cuda.is_available():
-        raise RuntimeError("CUDA device requested but not available")
-    device = torch.device(args.device)
-    print(f"Using device: {device}")
-
-    # Create output directory
     output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Create datasets
     print("Loading datasets...")
     train_dataset = MelSpectrogramDataset(
         args.data_dir,
-        exclude_fold=args.val_fold,
+        exclude_fold=fold,
     )
     val_dataset = MelSpectrogramDataset(
         args.data_dir,
-        fold=args.val_fold,
+        fold=fold,
     )
 
     train_loader = DataLoader(
@@ -264,7 +238,7 @@ def main():
             print(f"Epoch {epoch+1}/{args.epochs} - "
                   f"Train Loss: {train_loss:.6f}, Retrieval Acc: {retrieval_acc:.4f}")
 
-            # Save best model
+            # Save best model for this fold
             if retrieval_acc > best_retrieval_acc:
                 best_retrieval_acc = retrieval_acc
                 checkpoint = {
@@ -272,6 +246,7 @@ def main():
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'retrieval_acc': retrieval_acc,
+                    'fold': fold,
                     'config': {
                         'n_mels': 128,
                         'n_frames': train_dataset.n_frames,
@@ -281,8 +256,8 @@ def main():
                         'proj_dim': args.proj_dim,
                     },
                 }
-                torch.save(checkpoint, output_dir / 'contrastive_esc50_best.pt')
-                print(f"  -> Saved best model (retrieval_acc: {retrieval_acc:.4f})")
+                torch.save(checkpoint, output_dir / f'contrastive_esc50_fold{fold}.pt')
+                print(f"  -> Saved best model for fold {fold} (retrieval_acc: {retrieval_acc:.4f})")
         else:
             print(f"Epoch {epoch+1}/{args.epochs} - Train Loss: {train_loss:.6f}")
 
@@ -294,29 +269,74 @@ def main():
         retrieval_acc = validate_retrieval(model, train_loader, val_loader, device)
         print(f"Final retrieval accuracy: {retrieval_acc:.4f}")
 
-    # Save final model
-    checkpoint = {
-        'epoch': args.epochs,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'retrieval_acc': retrieval_acc,
-        'config': {
-            'n_mels': 128,
-            'n_frames': train_dataset.n_frames,
-            'n_fft': train_dataset.n_fft,
-            'hop_length': train_dataset.hop_length,
-            'embed_dim': args.embed_dim,
-            'proj_dim': args.proj_dim,
-        },
-    }
-    torch.save(checkpoint, output_dir / 'contrastive_esc50_final.pt')
+    print(f"Fold {fold} - Best Retrieval Acc: {best_retrieval_acc:.4f}")
+    return best_retrieval_acc, history
 
-    # Save training history
-    with open(output_dir / 'contrastive_history.json', 'w') as f:
-        json.dump(history, f)
 
-    print(f"\nTraining complete. Best retrieval acc: {best_retrieval_acc:.4f}")
-    print(f"Models saved to {output_dir}")
+def main():
+    parser = argparse.ArgumentParser(description='Train supervised contrastive encoder with 5-fold CV')
+    parser.add_argument('--data_dir', type=str, required=True,
+                        help='Path to ESC-50 dataset')
+    parser.add_argument('--output_dir', type=str, default='models',
+                        help='Output directory for checkpoints')
+    parser.add_argument('--epochs', type=int, default=200,
+                        help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=64,
+                        help='Batch size (larger is better for contrastive)')
+    parser.add_argument('--lr', type=float, default=1e-3,
+                        help='Learning rate')
+    parser.add_argument('--embed_dim', type=int, default=128,
+                        help='Embedding dimension')
+    parser.add_argument('--proj_dim', type=int, default=128,
+                        help='Projection dimension')
+    parser.add_argument('--temperature', type=float, default=0.07,
+                        help='Temperature for SupCon loss')
+    parser.add_argument('--folds', type=str, default='1,2,3,4,5',
+                        help='Folds to train (comma-separated)')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Device (cuda or cpu)')
+    args = parser.parse_args()
+
+    # Setup device
+    if args.device == 'cuda' and not torch.cuda.is_available():
+        raise RuntimeError("CUDA device requested but not available")
+    device = torch.device(args.device)
+    print(f"Using device: {device}")
+
+    # Create output directory
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse folds
+    folds = [int(f) for f in args.folds.split(',')]
+
+    # Train each fold
+    all_results = {}
+    all_histories = {}
+
+    for fold in folds:
+        best_acc, history = train_fold(args, fold, device)
+        all_results[f'fold{fold}'] = best_acc
+        all_histories[f'fold{fold}'] = history
+
+    # Summary
+    print("\n" + "=" * 50)
+    print("5-Fold Cross-Validation Results")
+    print("=" * 50)
+    accs = list(all_results.values())
+    for fold, acc in all_results.items():
+        print(f"{fold}: {acc:.4f}")
+    print(f"Mean: {np.mean(accs):.4f} ± {np.std(accs):.4f}")
+
+    # Save results
+    with open(output_dir / 'contrastive_5fold_results.json', 'w') as f:
+        json.dump({
+            'results': all_results,
+            'mean': float(np.mean(accs)),
+            'std': float(np.std(accs)),
+        }, f, indent=2)
+
+    print(f"\nResults saved to {output_dir}")
 
 
 if __name__ == '__main__':

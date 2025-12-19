@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Deep Learning Retriever Evaluation Script
+Deep Learning Retriever Evaluation Script (Multi-GPU Parallel Version)
 
 This script evaluates trained deep learning retrievers (Autoencoder, CNN, Contrastive)
-on the ESC-50 dataset with 5-fold cross-validation.
+on the ESC-50 dataset with 5-fold cross-validation, using multiple GPUs in parallel.
 
 Prerequisites:
-    Run the training scripts first to generate model checkpoints:
-    - python experiments/training/train_autoencoder.py --data_dir ESC-50
-    - python experiments/training/train_cnn.py --data_dir ESC-50
-    - python experiments/training/train_contrastive.py --data_dir ESC-50
+    Run the training scripts first to generate per-fold model checkpoints:
+    - python experiments/training/train_autoencoder.py --data_dir ESC-50 --folds 1,2,3,4,5
+    - python experiments/training/train_cnn.py --data_dir ESC-50 --folds 1,2,3,4,5
+    - python experiments/training/train_contrastive.py --data_dir ESC-50 --folds 1,2,3,4,5
 
 Usage:
-    python run_deep_retrievers.py [--models-dir MODELS_DIR] [--output OUTPUT_DIR]
+    python run_deep_retrievers.py [--models-dir MODELS_DIR] [--num-gpus 8]
 """
 
 import os
@@ -22,10 +22,12 @@ import argparse
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass
 import yaml
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -33,17 +35,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Rich imports for beautiful terminal output
 from rich.console import Console
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    BarColumn,
-    TaskProgressColumn,
-    TimeRemainingColumn,
-    TimeElapsedColumn,
-)
 from rich.table import Table
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich import box
 
 # Project imports
@@ -53,6 +47,15 @@ from src.metrics.bootstrap import aggregate_metrics_with_ci
 
 # Initialize rich console
 console = Console()
+
+
+@dataclass
+class EvalTask:
+    """Represents a single evaluation task."""
+    model_type: str  # 'Autoencoder', 'CNN', 'Contrastive'
+    fold: int
+    checkpoint_path: str
+    gpu_id: int
 
 
 def load_config(config_path: str) -> Dict:
@@ -74,352 +77,246 @@ def setup_logging(output_dir: Path) -> logging.Logger:
     return logging.getLogger('deep_retrieval_experiment')
 
 
-def find_model_checkpoints(models_dir: Path) -> Dict[str, Optional[Path]]:
+def discover_fold_checkpoints(models_dir: Path, folds: List[int]) -> Dict[str, Dict[int, Path]]:
     """
-    Find available model checkpoints.
+    Discover all per-fold checkpoints for each model type.
 
-    Returns dict mapping model name to checkpoint path (or None if not found).
+    Returns:
+        Dict mapping model_type -> {fold: checkpoint_path}
     """
     checkpoints = {
-        'Autoencoder': None,
-        'CNN': None,
-        'Contrastive': None,
+        'Autoencoder': {},
+        'CNN': {},
+        'Contrastive': {},
     }
 
-    # Autoencoder: look for best model
-    ae_path = models_dir / 'autoencoder_esc50_best.pt'
-    if ae_path.exists():
-        checkpoints['Autoencoder'] = ae_path
-    else:
-        ae_final = models_dir / 'autoencoder_esc50_final.pt'
-        if ae_final.exists():
-            checkpoints['Autoencoder'] = ae_final
+    for fold in folds:
+        # Autoencoder
+        ae_path = models_dir / f'autoencoder_esc50_fold{fold}.pt'
+        if ae_path.exists():
+            checkpoints['Autoencoder'][fold] = ae_path
 
-    # CNN: 5-fold CV produces per-fold checkpoints, use fold 5 by default
-    # or any available fold
-    for fold in [5, 1, 2, 3, 4]:
+        # CNN
         cnn_path = models_dir / f'cnn_esc50_fold{fold}.pt'
         if cnn_path.exists():
-            checkpoints['CNN'] = cnn_path
-            break
+            checkpoints['CNN'][fold] = cnn_path
 
-    # Contrastive: look for best model
-    cont_path = models_dir / 'contrastive_esc50_best.pt'
-    if cont_path.exists():
-        checkpoints['Contrastive'] = cont_path
-    else:
-        cont_final = models_dir / 'contrastive_esc50_final.pt'
-        if cont_final.exists():
-            checkpoints['Contrastive'] = cont_final
+        # Contrastive
+        cont_path = models_dir / f'contrastive_esc50_fold{fold}.pt'
+        if cont_path.exists():
+            checkpoints['Contrastive'][fold] = cont_path
 
     return checkpoints
 
 
-def create_deep_retrievers(
-    checkpoints: Dict[str, Optional[Path]],
-    device: str,
-    sr: int,
-) -> Dict:
+def evaluate_single_task(args: Tuple) -> Dict:
     """
-    Create deep learning retrievers from trained checkpoints.
+    Worker function to evaluate a single (model_type, fold) on a specific GPU.
 
-    Only creates retrievers for available checkpoints.
+    This function runs in a separate process with its own CUDA context.
     """
-    from src.retrieval.autoencoder_retriever import AutoencoderRetriever
-    from src.retrieval.cnn_retriever import CNNRetriever
-    from src.retrieval.contrastive_retriever import ContrastiveRetriever
+    task_dict, dataset_root, sr = args
 
-    methods = {}
+    # Reconstruct task from dict (dataclass not always picklable)
+    model_type = task_dict['model_type']
+    fold = task_dict['fold']
+    checkpoint_path = task_dict['checkpoint_path']
+    gpu_id = task_dict['gpu_id']
 
-    if checkpoints['Autoencoder'] is not None:
-        try:
-            methods['Deep_Autoencoder'] = AutoencoderRetriever(
-                model_path=str(checkpoints['Autoencoder']),
+    device = f'cuda:{gpu_id}'
+
+    try:
+        # Set CUDA device for this process
+        torch.cuda.set_device(gpu_id)
+
+        # Import retrievers here to avoid issues with multiprocessing
+        from src.retrieval.autoencoder_retriever import AutoencoderRetriever
+        from src.retrieval.cnn_retriever import CNNRetriever
+        from src.retrieval.contrastive_retriever import ContrastiveRetriever
+
+        # Load dataset
+        dataset = ESC50Dataset(
+            root_dir=dataset_root,
+            sr=sr,
+            preload=False
+        )
+        query_samples, gallery_samples = dataset.get_query_gallery_split(fold)
+
+        # Create retriever based on model type
+        if model_type == 'Autoencoder':
+            retriever = AutoencoderRetriever(
+                model_path=checkpoint_path,
                 name='Deep_Autoencoder',
                 device=device,
                 sr=sr,
             )
-        except Exception as e:
-            console.print(f"[yellow]Warning: Failed to load Autoencoder: {e}[/yellow]")
-
-    if checkpoints['CNN'] is not None:
-        try:
-            methods['Deep_CNN'] = CNNRetriever(
-                model_path=str(checkpoints['CNN']),
+        elif model_type == 'CNN':
+            retriever = CNNRetriever(
+                model_path=checkpoint_path,
                 name='Deep_CNN',
                 device=device,
                 sr=sr,
             )
-        except Exception as e:
-            console.print(f"[yellow]Warning: Failed to load CNN: {e}[/yellow]")
-
-    if checkpoints['Contrastive'] is not None:
-        try:
-            methods['Deep_Contrastive'] = ContrastiveRetriever(
-                model_path=str(checkpoints['Contrastive']),
+        elif model_type == 'Contrastive':
+            retriever = ContrastiveRetriever(
+                model_path=checkpoint_path,
                 name='Deep_Contrastive',
                 device=device,
                 sr=sr,
             )
-        except Exception as e:
-            console.print(f"[yellow]Warning: Failed to load Contrastive: {e}[/yellow]")
-
-    return methods
-
-
-def evaluate_method_fold(
-    method,
-    query_samples: List[Dict],
-    gallery_samples: List[Dict],
-    progress: Progress,
-    task_id: int,
-    logger: logging.Logger,
-) -> Dict[str, float]:
-    """Evaluate a single method on one fold."""
-    # Build gallery
-    method.build_gallery(gallery_samples, show_progress=False)
-
-    # Evaluate queries
-    all_metrics = []
-    for i, query in enumerate(query_samples):
-        metrics = method.evaluate_query(query)
-        all_metrics.append(metrics)
-        progress.update(task_id, advance=1)
-
-    # Aggregate metrics
-    aggregated = aggregate_metrics(all_metrics)
-
-    # Extract mean values
-    result = {}
-    for metric_name, stats in aggregated.items():
-        if isinstance(stats, dict) and 'mean' in stats:
-            result[metric_name] = stats['mean']
-
-    return result
-
-
-def run_experiment(
-    models_dir: Path,
-    config: Dict,
-    output_dir: Path,
-    logger: logging.Logger,
-):
-    """Run the deep retriever evaluation experiment."""
-
-    # Get settings
-    dataset_cfg = config.get('dataset', {})
-    eval_cfg = config.get('evaluation', {})
-    device = config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
-
-    # Check CUDA availability
-    if device == 'cuda' and not torch.cuda.is_available():
-        console.print("[yellow]CUDA not available, falling back to CPU[/yellow]")
-        device = 'cpu'
-
-    sr = dataset_cfg.get('sr', 22050)
-    folds = eval_cfg.get('folds', None)
-    if folds is None:
-        num_folds = eval_cfg.get('num_folds', 5)
-        folds = list(range(1, num_folds + 1))
-    else:
-        folds = [int(f) for f in folds]
-
-    # Print experiment header
-    console.print(Panel.fit(
-        "[bold blue]Deep Learning Retriever Evaluation[/bold blue]\n"
-        f"Dataset: ESC-50 | Device: {device} | Folds: {folds}",
-        border_style="blue"
-    ))
-
-    logger.info("=" * 60)
-    logger.info("DEEP RETRIEVER EXPERIMENT STARTED")
-    logger.info(f"Device: {device}")
-    logger.info(f"Models dir: {models_dir}")
-    logger.info(f"Folds: {folds}")
-    logger.info("=" * 60)
-
-    # Find model checkpoints
-    console.print("\n[bold]Searching for model checkpoints...[/bold]")
-    checkpoints = find_model_checkpoints(models_dir)
-
-    # For CNN, prefer fold-specific checkpoints if present (avoids fold leakage).
-    cnn_fold_checkpoints: Dict[int, Path] = {}
-    for fold in folds:
-        fold_ckpt = models_dir / f'cnn_esc50_fold{fold}.pt'
-        if fold_ckpt.exists():
-            cnn_fold_checkpoints[int(fold)] = fold_ckpt
-
-    found_any = False
-    for name, path in checkpoints.items():
-        if path is not None:
-            console.print(f"  [green]✓[/green] {name}: {path.name}")
-            logger.info(f"Found {name}: {path}")
-            found_any = True
         else:
-            console.print(f"  [red]✗[/red] {name}: not found")
-            logger.info(f"Missing {name}")
+            raise ValueError(f"Unknown model type: {model_type}")
 
-    if cnn_fold_checkpoints:
-        logger.info(
-            f"CNN fold checkpoints available: {sorted(cnn_fold_checkpoints.keys())} (will use per-fold checkpoints when evaluating Deep_CNN)"
+        # Build gallery
+        retriever.build_gallery(gallery_samples, show_progress=False)
+
+        # Evaluate all queries
+        all_metrics = []
+        for query in query_samples:
+            metrics = retriever.evaluate_query(query)
+            all_metrics.append(metrics)
+
+        # Aggregate metrics
+        aggregated = aggregate_metrics(all_metrics)
+
+        # Extract mean values
+        result = {}
+        for metric_name, stats in aggregated.items():
+            if isinstance(stats, dict) and 'mean' in stats:
+                result[metric_name] = stats['mean']
+
+        # Cleanup
+        retriever.clear_gallery()
+        del retriever
+        torch.cuda.empty_cache()
+
+        return {
+            'model_type': model_type,
+            'fold': fold,
+            'gpu_id': gpu_id,
+            'metrics': result,
+            'status': 'success',
+            'error': None,
+        }
+
+    except Exception as e:
+        return {
+            'model_type': model_type,
+            'fold': fold,
+            'gpu_id': gpu_id,
+            'metrics': {},
+            'status': 'error',
+            'error': str(e),
+        }
+
+
+def run_parallel_evaluation(
+    tasks: List[EvalTask],
+    dataset_root: str,
+    sr: int,
+    num_workers: int,
+) -> List[Dict]:
+    """
+    Run evaluation tasks in parallel across multiple GPUs.
+
+    Args:
+        tasks: List of evaluation tasks
+        dataset_root: Path to ESC-50 dataset
+        sr: Sample rate
+        num_workers: Number of parallel workers (typically = num_gpus)
+
+    Returns:
+        List of result dictionaries
+    """
+    # Convert tasks to dicts for pickling
+    task_args = [
+        (
+            {
+                'model_type': t.model_type,
+                'fold': t.fold,
+                'checkpoint_path': t.checkpoint_path,
+                'gpu_id': t.gpu_id,
+            },
+            dataset_root,
+            sr,
         )
+        for t in tasks
+    ]
 
-    if not found_any:
-        console.print("\n[red]No model checkpoints found![/red]")
-        console.print("Please run training scripts first:")
-        console.print("  python experiments/training/train_autoencoder.py --data_dir ESC-50")
-        console.print("  python experiments/training/train_cnn.py --data_dir ESC-50")
-        console.print("  python experiments/training/train_contrastive.py --data_dir ESC-50")
-        return None
+    # Use spawn to ensure clean CUDA contexts
+    ctx = mp.get_context('spawn')
 
-    # Load dataset
-    console.print("\n[bold]Loading ESC-50 dataset...[/bold]")
-    dataset_root = PROJECT_ROOT / dataset_cfg.get('root_dir', 'ESC-50')
-    dataset = ESC50Dataset(
-        root_dir=str(dataset_root),
-        sr=sr,
-        preload=dataset_cfg.get('preload', False)
-    )
-    console.print(f"[green]✓[/green] Loaded {len(dataset)} samples, {dataset.NUM_CLASSES} classes")
-    logger.info(f"Dataset loaded: {len(dataset)} samples")
-
-    # Create methods
-    console.print("\n[bold]Initializing deep learning retrievers...[/bold]")
-    methods = create_deep_retrievers(checkpoints, device, sr)
-
-    if not methods:
-        console.print("[red]No retrievers could be initialized![/red]")
-        return None
-
-    for name in methods:
-        console.print(f"  [green]✓[/green] {name}")
-    logger.info(f"Methods initialized: {list(methods.keys())}")
-
-    # Results storage
-    results = {
-        'config': config,
-        'timestamp': datetime.now().isoformat(),
-        'models_dir': str(models_dir),
-        'methods': {}
-    }
-
-    queries_per_fold = len(dataset) // dataset.NUM_FOLDS
-
-    # Create progress display
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=30),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
-
-        total_tasks = len(methods) * len(folds) * queries_per_fold
-        overall_task = progress.add_task(
-            "[cyan]Overall Progress",
-            total=total_tasks
-        )
-
-        for method_name, method in methods.items():
-            method_results = {
-                'mean': {},
-                'std': {},
-                'ci': {},
-                'folds': {}
-            }
-            fold_metrics = []
-            if method_name == 'Deep_CNN' and not cnn_fold_checkpoints:
-                logger.warning(
-                    "Deep_CNN is being evaluated without fold-specific checkpoints; results may be optimistic due to fold leakage."
-                )
-
-            method_task = progress.add_task(
-                f"[yellow]{method_name}",
-                total=len(folds) * queries_per_fold
+    results = []
+    with ctx.Pool(processes=num_workers) as pool:
+        # Use imap for ordered results with progress tracking
+        for result in pool.imap(evaluate_single_task, task_args):
+            results.append(result)
+            # Print progress
+            status = "✓" if result['status'] == 'success' else "✗"
+            if result['status'] == 'success':
+                hit10 = result['metrics'].get('hit@10', 0)
+                detail = f"Hit@10={hit10:.4f}"
+            else:
+                detail = result['error']
+            console.print(
+                f"  [{status}] {result['model_type']} fold {result['fold']} "
+                f"(GPU {result['gpu_id']}): {detail}"
             )
 
-            for fold in folds:
-                # Get fold split
-                query_samples, gallery_samples = dataset.get_query_gallery_split(fold)
-
-                fold_method = method
-                if method_name == 'Deep_CNN':
-                    fold_ckpt = cnn_fold_checkpoints.get(int(fold))
-                    if fold_ckpt is not None:
-                        from src.retrieval.cnn_retriever import CNNRetriever
-
-                        fold_method = CNNRetriever(
-                            model_path=str(fold_ckpt),
-                            name='Deep_CNN',
-                            device=device,
-                            sr=sr,
-                        )
-                        logger.info(f"Deep_CNN fold {fold}: using checkpoint {fold_ckpt.name}")
-                    else:
-                        fallback = getattr(method, 'model_path', None)
-                        if fallback:
-                            logger.warning(
-                                f"Deep_CNN fold {fold}: missing cnn_esc50_fold{fold}.pt; falling back to {Path(fallback).name}"
-                            )
-                        else:
-                            logger.warning(
-                                f"Deep_CNN fold {fold}: missing cnn_esc50_fold{fold}.pt and no fallback checkpoint path found"
-                            )
-
-                # Evaluate
-                fold_result = evaluate_method_fold(
-                    fold_method,
-                    query_samples,
-                    gallery_samples,
-                    progress,
-                    method_task,
-                    logger,
-                )
-
-                # Release per-fold CNN model to avoid holding multiple checkpoints on GPU.
-                if method_name == 'Deep_CNN' and fold_ckpt is not None:
-                    fold_method.clear_gallery()
-                    del fold_method
-                    if device == 'cuda' and torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-
-                method_results['folds'][str(fold)] = fold_result
-                fold_metrics.append(fold_result)
-
-                progress.update(overall_task, advance=queries_per_fold)
-
-            # Compute mean, std, and bootstrap CI across folds
-            aggregated_with_ci = aggregate_metrics_with_ci(fold_metrics)
-            for metric, stats in aggregated_with_ci.items():
-                method_results['mean'][metric] = float(stats['mean'])
-                method_results['std'][metric] = float(stats['std'])
-                method_results['ci'][metric] = {
-                    'lower': float(stats['ci_lower']),
-                    'upper': float(stats['ci_upper']),
-                    'width': float(stats['ci_width']),
-                }
-
-            results['methods'][method_name] = method_results
-
-            # Log results
-            logger.info(f"Results for {method_name}:")
-            for metric, value in method_results['mean'].items():
-                ci = method_results['ci'].get(metric, {})
-                ci_str = f" [{ci.get('lower', 0):.4f}, {ci.get('upper', 0):.4f}]" if ci else ""
-                logger.info(f"  {metric}: {value:.4f} ± {method_results['std'][metric]:.4f}{ci_str}")
-
-            progress.remove_task(method_task)
-
-    # Display results table
-    console.print("\n")
-    display_results_table(results, console)
-
-    # Save results
-    save_results(results, output_dir, logger)
-
     return results
+
+
+def aggregate_results_by_method(results: List[Dict]) -> Dict[str, Dict]:
+    """
+    Aggregate per-fold results into per-method statistics.
+
+    Args:
+        results: List of per-task results
+
+    Returns:
+        Dict mapping method_name -> {mean, std, ci, folds}
+    """
+    # Group results by model type
+    by_method = {}
+    for r in results:
+        if r['status'] != 'success':
+            continue
+
+        model_type = r['model_type']
+        method_name = f"Deep_{model_type}"
+
+        if method_name not in by_method:
+            by_method[method_name] = {'folds': {}, 'fold_metrics': []}
+
+        by_method[method_name]['folds'][str(r['fold'])] = r['metrics']
+        by_method[method_name]['fold_metrics'].append(r['metrics'])
+
+    # Compute statistics for each method
+    method_results = {}
+    for method_name, data in by_method.items():
+        fold_metrics = data['fold_metrics']
+
+        if not fold_metrics:
+            continue
+
+        # Use bootstrap CI aggregation
+        aggregated_with_ci = aggregate_metrics_with_ci(fold_metrics)
+
+        method_results[method_name] = {
+            'mean': {m: float(s['mean']) for m, s in aggregated_with_ci.items()},
+            'std': {m: float(s['std']) for m, s in aggregated_with_ci.items()},
+            'ci': {
+                m: {
+                    'lower': float(s['ci_lower']),
+                    'upper': float(s['ci_upper']),
+                    'width': float(s['ci_width']),
+                }
+                for m, s in aggregated_with_ci.items()
+            },
+            'folds': data['folds'],
+        }
+
+    return method_results
 
 
 def display_results_table(results: Dict, console: Console):
@@ -461,6 +358,16 @@ def display_results_table(results: Dict, console: Console):
     console.print(table)
 
 
+def display_fold_details(results: Dict, console: Console):
+    """Display per-fold results for each method."""
+    for method_name, method_results in results['methods'].items():
+        console.print(f"\n[bold]{method_name} per-fold Hit@10:[/bold]")
+        folds = method_results.get('folds', {})
+        for fold_num in sorted(folds.keys(), key=int):
+            hit10 = folds[fold_num].get('hit@10', 0)
+            console.print(f"  Fold {fold_num}: {hit10:.4f}")
+
+
 def save_results(results: Dict, output_dir: Path, logger: logging.Logger):
     """Save results to files."""
     # Save JSON
@@ -491,7 +398,7 @@ def save_results(results: Dict, output_dir: Path, logger: logging.Logger):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Evaluate trained deep learning retrievers on ESC-50'
+        description='Evaluate trained deep learning retrievers on ESC-50 (Multi-GPU)'
     )
     parser.add_argument(
         '--config',
@@ -511,6 +418,18 @@ def main():
         default=None,
         help='Output directory (default: results/deep_retrievers/<timestamp>)'
     )
+    parser.add_argument(
+        '--num-gpus',
+        type=int,
+        default=8,
+        help='Number of GPUs to use for parallel evaluation'
+    )
+    parser.add_argument(
+        '--folds',
+        type=str,
+        default='1,2,3,4,5',
+        help='Folds to evaluate (comma-separated)'
+    )
 
     args = parser.parse_args()
 
@@ -529,14 +448,146 @@ def main():
     # Setup logging
     logger = setup_logging(output_dir)
 
-    # Run experiment
+    # Parse settings
     models_dir = Path(args.models_dir)
-    results = run_experiment(models_dir, config, output_dir, logger)
+    dataset_cfg = config.get('dataset', {})
+    sr = dataset_cfg.get('sr', 22050)
+    dataset_root = str(PROJECT_ROOT / dataset_cfg.get('root_dir', 'ESC-50'))
+    folds = [int(f) for f in args.folds.split(',')]
 
-    if results:
-        console.print(f"\n[bold green]Experiment completed![/bold green]")
-        console.print(f"Results saved to: {output_dir}")
+    # Detect available GPUs
+    num_gpus_available = torch.cuda.device_count()
+    num_gpus = min(args.num_gpus, num_gpus_available)
+
+    if num_gpus == 0:
+        console.print("[red]No GPUs available! This script requires CUDA.[/red]")
+        return
+
+    # Print header
+    console.print(Panel.fit(
+        "[bold blue]Deep Learning Retriever Evaluation (Multi-GPU)[/bold blue]\n"
+        f"Dataset: ESC-50 | GPUs: {num_gpus} | Folds: {folds}",
+        border_style="blue"
+    ))
+
+    logger.info("=" * 60)
+    logger.info("DEEP RETRIEVER EXPERIMENT STARTED (MULTI-GPU)")
+    logger.info(f"GPUs available: {num_gpus_available}, using: {num_gpus}")
+    logger.info(f"Models dir: {models_dir}")
+    logger.info(f"Folds: {folds}")
+    logger.info("=" * 60)
+
+    # Discover all per-fold checkpoints
+    console.print("\n[bold]Discovering per-fold checkpoints...[/bold]")
+    checkpoints = discover_fold_checkpoints(models_dir, folds)
+
+    # Display found checkpoints
+    total_found = 0
+    for model_type, fold_ckpts in checkpoints.items():
+        if fold_ckpts:
+            console.print(f"  [green]✓[/green] {model_type}: {len(fold_ckpts)} fold checkpoints")
+            for fold, path in sorted(fold_ckpts.items()):
+                console.print(f"      Fold {fold}: {path.name}")
+                logger.info(f"Found {model_type} fold {fold}: {path}")
+            total_found += len(fold_ckpts)
+        else:
+            console.print(f"  [red]✗[/red] {model_type}: no fold checkpoints found")
+            logger.warning(f"No checkpoints found for {model_type}")
+
+    if total_found == 0:
+        console.print("\n[red]No model checkpoints found![/red]")
+        console.print("Please run training scripts first with --folds 1,2,3,4,5:")
+        console.print("  python experiments/training/train_autoencoder.py --data_dir ESC-50 --folds 1,2,3,4,5")
+        console.print("  python experiments/training/train_cnn.py --data_dir ESC-50 --folds 1,2,3,4,5")
+        console.print("  python experiments/training/train_contrastive.py --data_dir ESC-50 --folds 1,2,3,4,5")
+        return
+
+    # Create evaluation tasks with round-robin GPU assignment
+    console.print(f"\n[bold]Creating evaluation tasks ({total_found} total)...[/bold]")
+    tasks = []
+    gpu_idx = 0
+
+    for model_type, fold_ckpts in checkpoints.items():
+        for fold, ckpt_path in sorted(fold_ckpts.items()):
+            task = EvalTask(
+                model_type=model_type,
+                fold=fold,
+                checkpoint_path=str(ckpt_path),
+                gpu_id=gpu_idx % num_gpus,
+            )
+            tasks.append(task)
+            gpu_idx += 1
+
+    console.print(f"  Created {len(tasks)} tasks across {num_gpus} GPUs")
+    logger.info(f"Created {len(tasks)} evaluation tasks")
+
+    # Show task distribution
+    gpu_tasks = {}
+    for t in tasks:
+        if t.gpu_id not in gpu_tasks:
+            gpu_tasks[t.gpu_id] = []
+        gpu_tasks[t.gpu_id].append(f"{t.model_type[:4]}-F{t.fold}")
+
+    for gpu_id in sorted(gpu_tasks.keys()):
+        console.print(f"    GPU {gpu_id}: {', '.join(gpu_tasks[gpu_id])}")
+
+    # Run parallel evaluation
+    console.print(f"\n[bold]Running parallel evaluation on {num_gpus} GPUs...[/bold]")
+    logger.info("Starting parallel evaluation")
+
+    start_time = datetime.now()
+    raw_results = run_parallel_evaluation(tasks, dataset_root, sr, num_gpus)
+    end_time = datetime.now()
+
+    elapsed = (end_time - start_time).total_seconds()
+    console.print(f"\n[green]✓[/green] Evaluation completed in {elapsed:.1f} seconds")
+    logger.info(f"Evaluation completed in {elapsed:.1f} seconds")
+
+    # Check for errors
+    errors = [r for r in raw_results if r['status'] == 'error']
+    if errors:
+        console.print(f"\n[yellow]Warning: {len(errors)} tasks failed:[/yellow]")
+        for e in errors:
+            console.print(f"  {e['model_type']} fold {e['fold']}: {e['error']}")
+            logger.error(f"{e['model_type']} fold {e['fold']} failed: {e['error']}")
+
+    # Aggregate results by method
+    method_results = aggregate_results_by_method(raw_results)
+
+    if not method_results:
+        console.print("[red]No successful evaluations![/red]")
+        return
+
+    # Build final results structure
+    results = {
+        'config': config,
+        'timestamp': datetime.now().isoformat(),
+        'models_dir': str(models_dir),
+        'num_gpus': num_gpus,
+        'elapsed_seconds': elapsed,
+        'methods': method_results,
+    }
+
+    # Display results
+    console.print("\n")
+    display_results_table(results, console)
+    display_fold_details(results, console)
+
+    # Log results
+    for method_name, data in method_results.items():
+        logger.info(f"Results for {method_name}:")
+        for metric, value in data['mean'].items():
+            std = data['std'].get(metric, 0)
+            logger.info(f"  {metric}: {value:.4f} ± {std:.4f}")
+
+    # Save results
+    save_results(results, output_dir, logger)
+
+    console.print(f"\n[bold green]Experiment completed![/bold green]")
+    console.print(f"Results saved to: {output_dir}")
 
 
 if __name__ == '__main__':
+    # Required for multiprocessing with CUDA
+    mp.set_start_method('spawn', force=True)
     main()

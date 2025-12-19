@@ -1,11 +1,11 @@
 # Audio Retrieval Report (ESC-50)
 
-Generated: 2025-12-19 00:03:17
+Generated: 2025-12-19 15:45:19
 
 ## 1. Data Sources
 
 - Baseline: `experiments/retrieval/results/20251218_032425/results.json`
-- Deep retrievers: `experiments/retrieval/results/deep_retrievers/20251218_172239/results.json`
+- Deep retrievers: `experiments/retrieval/results/deep_retrievers/20251219_152915/results.json`
 - Pretrained: `experiments/retrieval/results/pretrained/20251218_125713/results.json`
 - Grid search: `experiments/retrieval/results/grid_search/20251218_041636/step1_frame_hop.json`
 - Ablations: `experiments/retrieval/results/ablations/20251218_043710/all_ablations.json`
@@ -32,9 +32,9 @@ Figures are generated under `visualization/outputs/` via `python3 visualization/
 | `M1_MFCC_Pool_Cos` (M1: MFCC+Pool) | traditional | 26.40 | 52.15 | 65.00 | 78.45 | 16.75 | 0.374 | 0.100 | 0.186 | 1.80 |
 | `M3_LogMel_Pool` (M3: LogMel) | traditional | 25.80 | 52.60 | 64.20 | 76.75 | 17.88 | 0.372 | 0.111 | 0.196 | 2.17 |
 | `M4_Spectral_Stat` (M4: Spectral) | traditional | 17.40 | 42.90 | 55.00 | 68.65 | 11.74 | 0.281 | 0.062 | 0.129 | 2.93 |
-| `Deep_Contrastive` (Contrastive) | deep | 92.55 | 95.80 | 97.00 | 98.05 | 86.39 | 0.940 | 0.835 | 0.877 | 4.35 |
-| `Deep_CNN` (CNN) | deep | 71.95 | 79.30 | 82.55 | 87.10 | 69.78 | 0.752 | 0.667 | 0.703 | 2.53 |
-| `Deep_Autoencoder` (Autoencoder) | deep | 31.60 | 56.05 | 67.80 | 79.45 | 18.75 | 0.421 | 0.120 | 0.211 | 1.35 |
+| `Deep_Contrastive` (Contrastive) | deep | 71.75 | 83.40 | 87.80 | 92.45 | 65.96 | 0.767 | 0.608 | 0.672 | 1.42 |
+| `Deep_CNN` (CNN) | deep | 71.95 | 79.30 | 82.55 | 87.10 | 69.78 | 0.752 | 0.667 | 0.703 | 2.50 |
+| `Deep_Autoencoder` (Autoencoder) | deep | 30.50 | 56.50 | 67.95 | 78.80 | 18.90 | 0.416 | 0.120 | 0.211 | 0.90 |
 | `M8_CLAP` (M8: CLAP) | pretrained | 96.00 | 99.05 | 99.50 | 99.75 | 93.22 | 0.973 | 0.915 | 0.939 | 0.30 |
 | `M9_Hybrid` (M9: Hybrid) | pretrained | 96.10 | 99.00 | 99.45 | 99.80 | 92.75 | 0.974 | 0.910 | 0.935 | 0.25 |
 | `BEATs` | pretrained | 95.15 | 98.20 | 99.10 | 99.60 | 91.94 | 0.965 | 0.902 | 0.927 | 0.38 |
@@ -48,7 +48,7 @@ _Hit@10 CI (±pp) uses the stored 95% bootstrap CI when available; otherwise it 
 | Category | Best (Hit@10) | Hit@1 (%) | Hit@10 (%) | Hit@10 CI (±pp) |
 |---|---|---|---|---|
 | traditional | `M5_MFCC_DTW` (M5: DTW) | 31.65 | 70.45 | 2.00 |
-| deep | `Deep_Contrastive` (Contrastive) | 92.55 | 97.00 | 4.35 |
+| deep | `Deep_Contrastive` (Contrastive) | 71.75 | 87.80 | 1.42 |
 | pretrained | `M8_CLAP` (M8: CLAP) | 96.00 | 99.50 | 0.30 |
 
 ## 5. Hyperparameter Grid Search
@@ -195,10 +195,10 @@ _Note: Efficiency benchmarking is currently available for the traditional (M1–
 | `M8_CLAP` (M8: CLAP) | 99.50 ± 0.35 | 0.4 | 99.00 | 100.00 |
 | `M9_Hybrid` (M9: Hybrid) | 99.45 ± 0.29 | 0.3 | 99.00 | 99.75 |
 | `BEATs` | 99.10 ± 0.41 | 0.4 | 98.50 | 99.50 |
-| `Deep_Contrastive` (Contrastive) | 97.00 ± 5.75 | 5.9 | 85.50 | 100.00 |
+| `Deep_Contrastive` (Contrastive) | 87.80 ± 1.68 | 1.9 | 86.50 | 91.00 |
 | `Deep_CNN` (CNN) | 82.55 ± 2.99 | 3.6 | 77.25 | 86.25 |
 | `M5_MFCC_DTW` (M5: DTW) | 70.45 ± 2.25 | 3.2 | 67.75 | 74.25 |
-| `Deep_Autoencoder` (Autoencoder) | 67.80 ± 1.59 | 2.3 | 65.75 | 69.50 |
+| `Deep_Autoencoder` (Autoencoder) | 67.95 ± 1.11 | 1.6 | 66.25 | 69.50 |
 | `M7_MultiRes_Fusion` (M7: MultiRes) | 66.95 ± 2.16 | 3.2 | 64.25 | 69.25 |
 | `M2_MFCC_Delta_Pool` (M2: MFCC+Delta) | 65.50 ± 2.54 | 3.9 | 62.50 | 68.75 |
 | `M6_BoAW_ChiSq` (M6: BoAW) | 65.20 ± 1.71 | 2.6 | 62.75 | 67.75 |
