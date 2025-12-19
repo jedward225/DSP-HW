@@ -2,6 +2,7 @@
 
 # Experiment outputs / checkpoints
 /models/
+checkpoints/
 
 # External
 beats/
