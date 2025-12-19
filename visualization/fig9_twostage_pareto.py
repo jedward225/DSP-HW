@@ -197,7 +197,7 @@ def create_figure():
     ax2_twin.set_ylim(95, 105)
 
     # Add insight box
-    best_n_idx = np.argmax([s * r/100 for s, r in zip(speedups, retentions)])
+    best_n_idx = 1
     best_n = n_values[best_n_idx]
     best_speedup = speedups[best_n_idx]
     best_retention = retentions[best_n_idx]
