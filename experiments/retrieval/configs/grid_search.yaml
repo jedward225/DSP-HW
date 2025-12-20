@@ -1,0 +1,120 @@
+# Grid Search Configuration for Hyperparameter Optimization
+# Based on proposal.md Section 4
+
+# Search strategy: "efficient" uses 3-step approach, "full" does exhaustive search
+search_strategy: "efficient"
+
+# Dataset settings (same as default)
+dataset:
+  root_dir: "ESC-50"
+  sr: 22050
+  preload: false
+
+# Device settings
+device: "cuda"  # "cuda" or "cpu"
+
+# Method to use for grid search (M1 is fastest)
+base_method: "M1"
+
+# ============================================
+# Step 1: Frame length × Hop length sweep
+# Fix n_mels=64, n_mfcc=20, window=hann
+# ============================================
+step1:
+  # Frame lengths in milliseconds
+  # 20ms → 441 samples, 25ms → 551, 40ms → 882, 80ms → 1764 @22050Hz
+  frame_lengths_ms: [20, 25, 40, 80]
+
+  # Hop lengths in milliseconds
+  # 5ms → 110 samples, 10ms → 220, 20ms → 441, 40ms → 882 @22050Hz
+  hop_lengths_ms: [5, 10, 20, 40]
+
+  # Fixed parameters for Step 1
+  fixed:
+    n_mels: 64
+    n_mfcc: 20
+    window: "hann"
+
+  # Use single fold for speed (fold 5 typically used for validation)
+  folds: [5]
+
+  # Number of top configs to pass to Step 2
+  top_k: 3
+
+# ============================================
+# Step 2: n_mels × n_mfcc sweep
+# Use top-k frame/hop configs from Step 1
+# ============================================
+step2:
+  n_mels: [40, 64, 128]
+  n_mfcc: [13, 20, 40]
+
+  # Use same fold as Step 1
+  folds: [5]
+
+  # Number of top configs to pass to Step 3
+  top_k: 1
+
+# ============================================
+# Step 3: Window function comparison
+# Use best config from Step 2
+# ============================================
+step3:
+  windows: ["hann", "hamming", "boxcar"]  # boxcar = rectangular
+
+  # Run full 5-fold CV for final validation
+  full_cv: true
+  folds: [1, 2, 3, 4, 5]
+
+# ============================================
+# Step 4: Frequency range sweep (optional)
+# Test different fmin/fmax combinations
+# ============================================
+step4:
+  enabled: false  # Set to true to run this step
+
+  # Frequency range combinations: [fmin, fmax]
+  # null means sr/2 (Nyquist)
+  fmin_fmax:
+    - [0, null]        # Full range (0 to sr/2)
+    - [20, 8000]       # Speech-focused
+    - [50, 11025]      # Music-focused
+    - [0, 8000]        # Low-mid range
+    - [100, null]      # Remove DC and low rumble
+
+  # Use single fold for speed
+  folds: [5]
+
+# ============================================
+# Evaluation settings
+# ============================================
+evaluation:
+  # Primary metric for optimization
+  primary_metric: "hit@10"
+
+  # All metrics to report
+  metrics: ["hit@10", "precision@10", "mrr@10", "map@20", "ndcg@10"]
+
+  # K values for retrieval
+  k_values: [1, 5, 10, 20]
+
+# ============================================
+# Output settings
+# ============================================
+output:
+  results_dir: "experiments/retrieval/results/grid_search"
+  save_intermediate: true
+
+# ============================================
+# Sample rate to n_fft/hop_length conversion
+# These are computed automatically based on ms values
+# ============================================
+# Reference table (at sr=22050):
+# | ms    | samples |
+# |-------|---------|
+# | 5ms   | 110     |
+# | 10ms  | 220     |
+# | 20ms  | 441     |
+# | 25ms  | 551     |
+# | 40ms  | 882     |
+# | 80ms  | 1764    |

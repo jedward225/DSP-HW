@@ -1,2 +1,11 @@
 *__pycache__*
+
+# Experiment outputs / checkpoints
+/models/
 checkpoints/
+
+# External
+beats/
+laion_clap/
+unilm/
+CLAP/
