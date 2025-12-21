@@ -199,6 +199,23 @@ def create_model(
 
     return model
 
+def mixup_data(x, y, alpha=0.2, device='cuda'):
+    '''Returns mixed inputs, pairs of targets, and lambda'''
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
 
 def train_epoch(
     model: nn.Module,
@@ -206,7 +223,8 @@ def train_epoch(
     criterion: nn.Module,
     optimizer: optim.Optimizer,
     device: torch.device,
-    epoch: int
+    epoch: int,
+    mixup_lam: float = 0.2
 ) -> Tuple[float, float]:
     """Train for one epoch."""
     model.train()
@@ -222,8 +240,13 @@ def train_epoch(
 
         optimizer.zero_grad()
 
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
+        if mixup_lam > 0:
+            inputs, targets_a, targets_b, lam = mixup_data(inputs, targets, alpha=mixup_lam, device=device)
+            outputs = model(inputs)
+            loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+        else:
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
 
         loss.backward()
         optimizer.step()
@@ -306,6 +329,9 @@ def train(
     output_dir: str = 'checkpoints',
     use_augment: bool = False,
     num_workers: int = 0,
+    spec_augment: str = None,
+    mixup_lam: float = 0.2,
+    unfreeze_epoch: int = 50,
     **kwargs
 ):
     """Main training function."""
@@ -389,7 +415,7 @@ def train(
     print(f"Test samples: {len(test_dataset)}")
 
     # Create model
-    model = create_model(model_type, mode=mode, num_classes=50, **kwargs)
+    model = create_model(model_type, mode=mode, num_classes=50, spec_augment=spec_augment, **kwargs)
     model = model.to(device)
 
     print(f"Model: {model_type} ({mode})")
@@ -415,7 +441,7 @@ def train(
     )
 
     # Learning rate scheduler
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=unfreeze_epoch)
 
     # Training loop
     best_acc = 0.0
@@ -427,9 +453,20 @@ def train(
     }
 
     for epoch in range(1, epochs + 1):
+        if epoch-1 == unfreeze_epoch:
+            for param in model.parameters():
+                param.requires_grad = True
+            new_lr = lr * 0.3
+            optimizer = optim.AdamW(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=new_lr,
+                weight_decay=weight_decay
+            )
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs-unfreeze_epoch)
+
         # Train
         train_loss, train_acc = train_epoch(
-            model, train_loader, criterion, optimizer, device, epoch
+            model, train_loader, criterion, optimizer, device, epoch, mixup_lam
         )
 
         # Evaluate
@@ -489,6 +526,12 @@ def main():
                         help='Model type')
     parser.add_argument('--mode', type=str, default='adapter',
                         help='Training mode (adapter/finetune/zeroshot)')
+    parser.add_argument('--spec_augment', type=str, default=None,
+                        choices=[None, 'light', 'medium', 'strong'], help='SpecAugment type for BEATs/CLAP')
+    parser.add_argument('--mixup_lam', type=float, default=0.0,
+                        help='Mixup lambda parameter (for BEATs/CLAP)')
+    parser.add_argument('--unfreeze_epoch', type=int, default=50,
+                        help='Epoch to unfreeze encoder (for BEATs/CLAP fine-tuning)')
 
     # Feature settings (for ResNet18)
     parser.add_argument('--feature', type=str, default='mel',
@@ -502,7 +545,7 @@ def main():
                         help='Number of Mel bands')
 
     # Training settings
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=64,
                         help='Batch size')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs')
@@ -541,7 +584,10 @@ def main():
         data_root=args.data_root,
         output_dir=args.output_dir,
         device=args.device,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        spec_augment=args.spec_augment,
+        mixup_lam=args.mixup_lam,
+        unfreeze_epoch=args.unfreeze_epoch
     )
 
 
