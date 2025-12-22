@@ -12,8 +12,14 @@ Reference: [Ref-1] 张鑫恺等 89.25%, [Ref-2] 苏慧学等 92.15% (with Adapte
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchlibrosa.augmentation import SpecAugmentation
 from typing import Optional, Dict, Any
 import os
+
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(os.path.join(ROOT, 'external'))
 
 
 class Adapter(nn.Module):
@@ -71,7 +77,8 @@ class BEATsClassifier(nn.Module):
         use_adapter: bool = True,
         adapter_bottleneck: int = 64,
         classifier_hidden: int = 256,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        spec_augment: str = None
     ):
         """
         Initialize BEATs classifier.
@@ -98,6 +105,14 @@ class BEATsClassifier(nn.Module):
         self.num_classes = num_classes
         self.freeze_encoder = freeze_encoder
         self.use_adapter = use_adapter
+        if spec_augment == "light":
+            self.spec_augmentor = SpecAugmentation(time_drop_width=30, time_stripes_num=1, freq_drop_width=50, freq_stripes_num=1)
+        elif spec_augment == "medium":
+            self.spec_augmentor = SpecAugmentation(time_drop_width=40, time_stripes_num=2, freq_drop_width=60, freq_stripes_num=2)
+        elif spec_augment == "strong":
+            self.spec_augmentor = SpecAugmentation(time_drop_width=60, time_stripes_num=2, freq_drop_width=90, freq_stripes_num=2)
+        else:
+            self.spec_augmentor = None
 
         # Load BEATs model
         self.beats = self._load_beats(checkpoint_path)
@@ -220,6 +235,11 @@ class BEATsClassifier(nn.Module):
         if isinstance(features, tuple):
             features = features[0]
 
+        if self.training and not self.spec_augmentor == None:
+            features = features.unsqueeze(1)
+            features = self.spec_augmentor(features)
+            features = features.squeeze(1)
+
         # Apply Adapter if enabled
         if self.adapter is not None:
             features = self.adapter(features)
@@ -245,7 +265,8 @@ class BEATsClassifier(nn.Module):
 def create_beats_classifier(
     num_classes: int = 50,
     checkpoint_path: Optional[str] = None,
-    mode: str = 'adapter'
+    mode: str = 'adapter',
+    spec_augment: str = None
 ) -> BEATsClassifier:
     """
     Factory function to create BEATs classifier.
@@ -272,21 +293,24 @@ def create_beats_classifier(
             num_classes=num_classes,
             checkpoint_path=checkpoint_path,
             freeze_encoder=True,
-            use_adapter=True
+            use_adapter=True,
+            spec_augment=spec_augment
         )
     elif mode == 'finetune':
         return BEATsClassifier(
             num_classes=num_classes,
             checkpoint_path=checkpoint_path,
             freeze_encoder=False,
-            use_adapter=False
+            use_adapter=False,
+            spec_augment=spec_augment
         )
     elif mode == 'linear':
         return BEATsClassifier(
             num_classes=num_classes,
             checkpoint_path=checkpoint_path,
             freeze_encoder=True,
-            use_adapter=False
+            use_adapter=False,
+            spec_augment=spec_augment
         )
     else:
         raise ValueError(f"Unknown mode: {mode}")
