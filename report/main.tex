@@ -1889,7 +1889,67 @@ Enhanced (Ultimate) & Input $\rightarrow$ 512 $\rightarrow$ 256 $\rightarrow$ Ou
 
 \part{总结与感悟}
 
+\section{项目总结}
 
+本项目完整实现了基于 ESC-50 数据集的声音检索与分类系统，主要成果包括：
+
+\begin{enumerate}
+    \item \textbf{自实现 DSP 算法}：从零实现了 FFT（Cooley-Tukey 算法）、STFT、MFCC 等核心信号处理算法，并使用 Numba JIT 进行加速优化，达到了与标准库相当的精度（相对误差 $<10^{-10}$）。
+
+    \item \textbf{全面的检索系统}：实现了 13 种检索方法，从传统的池化方法（M1-M4）、DTW（M5）、BoAW（M6-M7），到深度学习方法（CLAP、BEATs），最终 CLAP 达到 99.50\% Hit@10，显著超越 DTW 基线的 70.45\%。
+
+    \item \textbf{多模型分类对比}：系统比较了 ResNet18、CNN14、BEATs、CLAP 等模型，通过 SpecAugment、Mixup、延迟解冻等策略，BEATs 达到 96.50\%，CLAP Ultimate Optimization 达到 98\%+。
+
+    \item \textbf{超参数敏感性分析}：对帧长/帧移、特征类型、CMVN 策略等进行了全面的消融实验，发现 n\_fft=2048, hop\_length=512 为最优配置，全局 CMVN 带来 +4.55pp 提升。
+\end{enumerate}
+
+\section{技术收获}
+
+\subsection{信号处理层面}
+\begin{itemize}
+    \item 深入理解了 FFT 的 Cooley-Tukey 蝶形运算原理
+    \item 掌握了 STFT 的时频分析方法与窗函数选择
+    \item 理解了 Mel 滤波器组的设计原理与听觉感知基础
+    \item 学会了 CMVN、Delta 特征等实用技术
+\end{itemize}
+
+\subsection{深度学习层面}
+\begin{itemize}
+    \item 掌握了预训练模型的迁移学习策略（冻结、解冻、Adapter）
+    \item 理解了 SpecAugment、Mixup 等数据增强技术的原理与应用
+    \item 学会了 Label Smoothing、TTA 等正则化与推理优化技术
+    \item 体会到预训练大模型（CLAP、BEATs）的强大泛化能力
+\end{itemize}
+
+\section{团队分工}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{成员} & \textbf{主要贡献} \\
+\midrule
+刘嘉俊 & 项目统筹、CLAP 微调实验、报告整合 \\
+孙浩翔 & 检索系统实现、DTW/BoAW 方法、效率优化 \\
+田原 & BEATs 分类实验、消融实验设计 \\
+叶栩言 & CNN14 实验、数据增强策略 \\
+林梓杰 & DSP 核心算法实现、特征工程 \\
+\bottomrule
+\end{tabular}
+\caption{团队分工}
+\end{table}
+
+\section{遇到的挑战与解决}
+
+\begin{enumerate}
+    \item \textbf{FFT 精度问题}：初期实现的 FFT 存在数值不稳定，通过引入 Numba JIT 和优化蝶形运算顺序解决。
+
+    \item \textbf{预训练模型过拟合}：直接微调 BEATs/CLAP 容易过拟合 ESC-50 小数据集，通过冻结编码器 + 延迟解冻策略解决。
+
+    \item \textbf{DTW 效率瓶颈}：原始 DTW 的 $O(N^2)$ 复杂度导致检索速度慢，通过 Sakoe-Chiba 带状约束 + Numba 并行化实现 10$\times$ 加速。
+
+    \item \textbf{CMVN 策略选择}：逐条 CMVN 导致灾难性失败（-51.80pp），发现全局 CMVN 是正确做法。
+\end{enumerate}
 
 % =========================================================
 \addcontentsline{toc}{section}{参考文献}

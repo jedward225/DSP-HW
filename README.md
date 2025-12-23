@@ -1,6 +1,6 @@
 # DSP 课程大作业：ESC-50 声音分类与检索
 
-**团队成员：** 刘嘉骏、孙浩翔、田原、叶栩言、林梓杰
+**团队成员：** 刘嘉俊、孙浩翔、田原、叶栩言、林梓杰
 
 ---
 
@@ -10,7 +10,8 @@
 
 1. **自实现 DSP 算法**：FFT（Cooley-Tukey）、STFT、MFCC，使用 Numba JIT 加速
 2. **多种分类模型**：ResNet18、BEATs、CNN14、CLAP
-3. **完整实验分析**：超参数对比、消融实验、模型对比
+3. **完整检索系统**：17 种检索方法，含传统方法与深度学习方法
+4. **全面实验分析**：超参数对比、消融实验、效率分析
 
 ### 核心结果
 
@@ -28,35 +29,46 @@
 
 ```
 DSP-HW/
-├── ESC-50/                     # 数据集（不上传git）
 ├── src/
-│   ├── dsp_core/               # 自实现DSP算法
+│   ├── dsp_core/               # 自实现 DSP 算法（核心）
 │   │   ├── fft.py              # Cooley-Tukey FFT
 │   │   ├── stft.py             # 短时傅里叶变换
 │   │   └── mfcc.py             # 梅尔频率倒谱系数
-│   ├── classification/
-│   │   ├── models/             # 分类模型
-│   │   │   ├── resnet.py       # ResNet18/34/50
-│   │   │   ├── beats.py        # BEATs + Adapter
-│   │   │   └── clap.py         # CLAP 零样本/微调
+│   │
+│   ├── retrieval/              # 检索方法（17种）
+│   │   ├── base.py             # 基类
+│   │   ├── pool_retriever.py   # 池化检索 (M1-M4)
+│   │   ├── dtw_retriever.py    # DTW 检索 (M5)
+│   │   ├── boaw_retriever.py   # BoAW 检索 (M6)
+│   │   ├── clap_retriever.py   # CLAP 检索 (M8)
+│   │   ├── beats_retriever.py  # BEATs 检索
+│   │   ├── hybrid_retriever.py # 混合检索 (M9)
+│   │   └── ...                 # 更多方法
+│   │
+│   ├── classification/         # 分类模型
+│   │   ├── models/             # ResNet, BEATs, CLAP
 │   │   ├── CLAP/               # CLAP 源码
 │   │   ├── train.py            # 训练脚本
-│   │   ├── features.py         # 特征提取
 │   │   └── augment.py          # 数据增强
-│   └── utils/
-│       └── dataset.py          # ESC-50 数据加载器
-├── external/
-│   └── BEATs.py                # BEATs 模型（Microsoft）
-├── scripts/
-│   ├── run_frame_experiments.py # 帧长/帧移实验
-│   ├── grid_search.py          # 超参数搜索
-│   └── test_clap_zeroshot.py   # CLAP 零样本测试
-├── experiments/
-│   └── 01_dsp_verification.ipynb # DSP 算法验证
+│   │
+│   ├── features/               # 特征工程
+│   │   ├── spectral.py         # 频谱特征
+│   │   ├── delta.py            # Delta 特征
+│   │   └── pooling.py          # 池化方法
+│   │
+│   ├── metrics/                # 评估指标
+│   │   └── retrieval_metrics.py # MRR, Hit@K, NDCG
+│   │
+│   ├── models/                 # 神经网络模型
+│   ├── data/                   # 数据集工具
+│   └── utils/                  # 工具函数
+│
+├── external/                   # 外部模型 (BEATs)
+├── scripts/                    # 实验脚本
+├── experiments/                # 实验记录
 ├── checkpoints/                # 模型权重
-├── report/
-│   └── main.tex                # 最终报告（LaTeX）
-└── ref/                        # 参考资料
+├── report/                     # 报告
+└── ESC-50/                     # 数据集（不上传）
 ```
 
 ---
@@ -144,7 +156,8 @@ python scripts/run_frame_experiments.py --quick
 - [x] 自实现 FFT、STFT、MFCC
 - [x] Top-10、Top-20 检索精度
 - [x] 帧长/帧移超参数对比
-- [x] ML vs 非ML 对比（CLAP vs DTW）
+- [x] ML vs 非ML 对比（CLAP 99.5% vs DTW 70.45%）
+- [x] 13 种检索方法全面对比
 
 ### 任务二：声音分类
 - [x] 自实现 FFT、STFT、MFCC
