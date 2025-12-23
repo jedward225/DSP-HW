@@ -1,0 +1,51 @@
+2025-12-18 04:16:36,797 | INFO     | ============================================================
+2025-12-18 04:16:36,797 | INFO     | GRID SEARCH STARTED
+2025-12-18 04:16:36,798 | INFO     | Device: cuda, Sample rate: 22050
+2025-12-18 04:16:36,798 | INFO     | ============================================================
+2025-12-18 04:16:36,813 | INFO     | Step 1: 14 configs, folds=[5]
+2025-12-18 04:16:54,158 | INFO     |   Config n_fft=441, hop=110: hit@10=0.6775
+2025-12-18 04:17:07,453 | INFO     |   Config n_fft=441, hop=220: hit@10=0.6725
+2025-12-18 04:17:19,099 | INFO     |   Config n_fft=441, hop=441: hit@10=0.6750
+2025-12-18 04:17:38,590 | INFO     |   Config n_fft=551, hop=110: hit@10=0.6825
+2025-12-18 04:17:53,558 | INFO     |   Config n_fft=551, hop=220: hit@10=0.6775
+2025-12-18 04:18:05,987 | INFO     |   Config n_fft=551, hop=441: hit@10=0.6750
+2025-12-18 04:18:27,801 | INFO     |   Config n_fft=882, hop=110: hit@10=0.6850
+2025-12-18 04:18:44,173 | INFO     |   Config n_fft=882, hop=220: hit@10=0.6825
+2025-12-18 04:18:57,429 | INFO     |   Config n_fft=882, hop=441: hit@10=0.6825
+2025-12-18 04:19:09,226 | INFO     |   Config n_fft=882, hop=882: hit@10=0.6750
+2025-12-18 04:19:44,091 | INFO     |   Config n_fft=1764, hop=110: hit@10=0.6775
+2025-12-18 04:20:09,312 | INFO     |   Config n_fft=1764, hop=220: hit@10=0.6775
+2025-12-18 04:20:38,103 | INFO     |   Config n_fft=1764, hop=441: hit@10=0.6800
+2025-12-18 04:21:00,456 | INFO     |   Config n_fft=1764, hop=882: hit@10=0.6800
+2025-12-18 04:21:00,464 | INFO     | Step 2: 27 configs
+2025-12-18 04:21:23,942 | INFO     |   Config n_mels=40, n_mfcc=13: hit@10=0.6675
+2025-12-18 04:21:54,692 | INFO     |   Config n_mels=40, n_mfcc=20: hit@10=0.6750
+2025-12-18 04:22:22,085 | INFO     |   Config n_mels=40, n_mfcc=40: hit@10=0.6775
+2025-12-18 04:22:45,343 | INFO     |   Config n_mels=64, n_mfcc=13: hit@10=0.6800
+2025-12-18 04:23:06,902 | INFO     |   Config n_mels=64, n_mfcc=20: hit@10=0.6850
+2025-12-18 04:23:28,797 | INFO     |   Config n_mels=64, n_mfcc=40: hit@10=0.6925
+2025-12-18 04:23:53,344 | INFO     |   Config n_mels=128, n_mfcc=13: hit@10=0.6875
+2025-12-18 04:24:17,297 | INFO     |   Config n_mels=128, n_mfcc=20: hit@10=0.6775
+2025-12-18 04:24:40,815 | INFO     |   Config n_mels=128, n_mfcc=40: hit@10=0.6950
+2025-12-18 04:25:00,065 | INFO     |   Config n_mels=40, n_mfcc=13: hit@10=0.6525
+2025-12-18 04:25:18,960 | INFO     |   Config n_mels=40, n_mfcc=20: hit@10=0.6625
+2025-12-18 04:25:37,730 | INFO     |   Config n_mels=40, n_mfcc=40: hit@10=0.6675
+2025-12-18 04:25:57,880 | INFO     |   Config n_mels=64, n_mfcc=13: hit@10=0.6575
+2025-12-18 04:26:17,119 | INFO     |   Config n_mels=64, n_mfcc=20: hit@10=0.6825
+2025-12-18 04:26:44,879 | INFO     |   Config n_mels=64, n_mfcc=40: hit@10=0.6725
+2025-12-18 04:27:17,604 | INFO     |   Config n_mels=128, n_mfcc=13: hit@10=0.6725
+2025-12-18 04:27:40,618 | INFO     |   Config n_mels=128, n_mfcc=20: hit@10=0.6825
+2025-12-18 04:28:10,857 | INFO     |   Config n_mels=128, n_mfcc=40: hit@10=0.6825
+2025-12-18 04:28:35,932 | INFO     |   Config n_mels=40, n_mfcc=13: hit@10=0.6675
+2025-12-18 04:28:53,598 | INFO     |   Config n_mels=40, n_mfcc=20: hit@10=0.6800
+2025-12-18 04:29:08,774 | INFO     |   Config n_mels=40, n_mfcc=40: hit@10=0.6825
+2025-12-18 04:29:24,886 | INFO     |   Config n_mels=64, n_mfcc=13: hit@10=0.6800
+2025-12-18 04:29:40,860 | INFO     |   Config n_mels=64, n_mfcc=20: hit@10=0.6825
+2025-12-18 04:29:56,587 | INFO     |   Config n_mels=64, n_mfcc=40: hit@10=0.6925
+2025-12-18 04:30:14,299 | INFO     |   Config n_mels=128, n_mfcc=13: hit@10=0.6850
+2025-12-18 04:30:32,059 | INFO     |   Config n_mels=128, n_mfcc=20: hit@10=0.6800
+2025-12-18 04:30:49,070 | INFO     |   Config n_mels=128, n_mfcc=40: hit@10=0.6900
+2025-12-18 04:30:49,078 | INFO     | Step 3: 3 window functions, full 5-fold CV
+2025-12-18 04:32:47,372 | INFO     |   Window=hann: hit@10=0.6725
+2025-12-18 04:35:09,833 | INFO     |   Window=hamming: hit@10=0.6715
+2025-12-18 04:37:07,549 | INFO     |   Window=boxcar: hit@10=0.6600

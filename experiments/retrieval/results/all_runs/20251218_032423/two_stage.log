@@ -1,0 +1,68 @@
+╭───────────────────────────────────────╮
+│ Two-Stage Retrieval Experiments       │
+│ Device: cuda | Folds: [1, 2, 3, 4, 5] │
+╰───────────────────────────────────────╯
+
+Loading ESC-50 dataset...
+✓ Loaded 2000 samples
+
+Testing N values: [20, 50, 100, 200, 500, 1000, 1600]
+
+Running Baseline Methods
+⠦ M1 (Coarse)                                  0% 0:39:54 -:--:--
+  M5 (Fine)   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:37:50 0:00:00
+
+Running Two-Stage Retrieval
+⠦ Two-Stage N=1000                                  0% 3:35:17 -:--:--
+Traceback (most recent call last):
+  File "/llm_jzm/shx/digit/DSP-HW/experiments/retrieval/run_twostage.py", line 373, in <module>
+    main()
+  File "/llm_jzm/shx/digit/DSP-HW/experiments/retrieval/run_twostage.py", line 362, in main
+    run_twostage_experiments(args.config, output_dir)
+  File "/llm_jzm/shx/digit/DSP-HW/experiments/retrieval/run_twostage.py", line 276, in run_twostage_experiments
+    metrics = evaluate_retriever(twostage, query_samples, gallery_samples, progress, task)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/llm_jzm/shx/digit/DSP-HW/experiments/retrieval/run_twostage.py", line 94, in evaluate_retriever
+    metrics = retriever.evaluate_query(query)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/llm_jzm/shx/digit/DSP-HW/src/retrieval/base.py", line 253, in evaluate_query
+    _, retrieved_labels = self.retrieve_with_labels(query_waveform, query_sr=query_sr)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/llm_jzm/shx/digit/DSP-HW/src/retrieval/base.py", line 226, in retrieve_with_labels
+    indices = self.retrieve(query_waveform, k=k, query_sr=query_sr)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/llm_jzm/shx/digit/DSP-HW/src/retrieval/twostage_retriever.py", line 135, in retrieve
+    self.fine_retriever.build_gallery(candidate_samples, show_progress=False)
+  File "/llm_jzm/shx/digit/DSP-HW/src/retrieval/dtw_retriever.py", line 432, in build_gallery
+    features = self.extract_features(waveform, sample_sr)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/llm_jzm/shx/digit/DSP-HW/src/retrieval/dtw_retriever.py", line 384, in extract_features
+    features = mfcc(
+               ^^^^^
+  File "/llm_jzm/shx/digit/DSP-HW/src/dsp_core/mfcc.py", line 106, in mfcc
+    return librosa.feature.mfcc(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shx/miniconda3/envs/ragen/lib/python3.12/site-packages/librosa/feature/spectral.py", line 1993, in mfcc
+    S = power_to_db(melspectrogram(y=y, sr=sr, norm = mel_norm, **kwargs))
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shx/miniconda3/envs/ragen/lib/python3.12/site-packages/librosa/feature/spectral.py", line 2135, in melspectrogram
+    S, n_fft = _spectrogram(
+               ^^^^^^^^^^^^^
+  File "/home/shx/miniconda3/envs/ragen/lib/python3.12/site-packages/librosa/core/spectrum.py", line 2945, in _spectrogram
+    stft(
+  File "/home/shx/miniconda3/envs/ragen/lib/python3.12/site-packages/librosa/core/spectrum.py", line 387, in stft
+    stft_matrix[..., bl_s + off_start : bl_t + off_start] = fft.rfft(
+                                                            ^^^^^^^^^
+  File "/home/shx/miniconda3/envs/ragen/lib/python3.12/site-packages/scipy/fft/_backend.py", line 28, in __ua_function__
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/shx/miniconda3/envs/ragen/lib/python3.12/site-packages/scipy/fft/_basic_backend.py", line 91, in rfft
+    return _execute_1D('rfft', _pocketfft.rfft, x, n=n, axis=axis, norm=norm,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shx/miniconda3/envs/ragen/lib/python3.12/site-packages/scipy/fft/_basic_backend.py", line 32, in _execute_1D
+    return pocketfft_func(x, n=n, axis=axis, norm=norm,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shx/miniconda3/envs/ragen/lib/python3.12/site-packages/scipy/fft/_pocketfft/basic.py", line 61, in r2c
+    return pfft.r2c(tmp, (axis,), forward, norm, None, workers)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
