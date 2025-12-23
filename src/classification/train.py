@@ -170,12 +170,19 @@ def create_model(
 ) -> nn.Module:
     """Create model based on type and mode."""
 
+    # Filter out parameters that are not for model constructor
+    non_model_params = ['label_smoothing', 'spec_augment']
+    model_kwargs = {k: v for k, v in kwargs.items() if k not in non_model_params}
+
     if model_type == 'beats':
         from src.classification.models.beats import create_beats_classifier
+        # BEATs supports spec_augment
+        if 'spec_augment' in kwargs:
+            model_kwargs['spec_augment'] = kwargs['spec_augment']
         model = create_beats_classifier(
             num_classes=num_classes,
             mode=mode,
-            **kwargs
+            **model_kwargs
         )
 
     elif model_type == 'clap':
@@ -183,15 +190,17 @@ def create_model(
         model = create_clap_classifier(
             num_classes=num_classes,
             mode=mode,
-            **kwargs
         )
 
     elif model_type == 'resnet18':
         from src.classification.models.resnet import create_resnet_classifier
+        # ResNet only needs basic params
+        resnet_kwargs = {k: v for k, v in model_kwargs.items()
+                        if k in ['arch', 'in_channels', 'dropout', 'freeze_early_layers', 'variant']}
         model = create_resnet_classifier(
             num_classes=num_classes,
             pretrained=True,
-            **kwargs
+            **resnet_kwargs
         )
 
     else:
