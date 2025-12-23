@@ -1,74 +1,174 @@
-# DSP-HW
+# DSP 课程大作业：ESC-50 声音分类与检索
 
-**Jiajun Liu, Haoxiang Sun, Yuan Tian, Xuyan Ye, Zijie Lin**
+**团队成员：** 刘嘉骏、孙浩翔、田原、叶栩言、林梓杰
 
-## Intro
+---
 
-This is the repository of the final project of the course DSP taught by Prof. Wenbing Huang.
+## 项目简介
 
-## Inital Structure
+本项目基于 ESC-50 数据集实现声音分类与检索系统，主要内容包括：
+
+1. **自实现 DSP 算法**：FFT（Cooley-Tukey）、STFT、MFCC，使用 Numba JIT 加速
+2. **多种分类模型**：ResNet18、BEATs、CNN14、CLAP
+3. **完整实验分析**：超参数对比、消融实验、模型对比
+
+### 核心结果
+
+| 任务 | 方法 | 性能 |
+|------|------|------|
+| 分类 | BEATs + SpecAugment + Mixup | **96.50%** |
+| 分类 | CLAP Ultimate Optimization | **98%+** |
+| 分类 | CNN14 + SpecAugment + Mixup | **92.75%** |
+| 检索 | CLAP | **99.50% Hit@10** |
+| 检索 | DTW（非ML基线） | **70.45% Hit@10** |
+
+---
+
+## 仓库结构
 
 ```
-DSP_Final_Project/
-├── ESC-50
-├── README.md               # 项目介绍、运行指南、成员分工
-├── requirements.txt        # 依赖库
-├── data/                   # 数据存放 (不要上传到git，只放占位符)
-│   ├── raw/                # 原始WAV文件
-│   └── processed/          # 提取好的特征 (npy文件)
-├── src/                    # 源代码
-│   ├── dsp_core/           # 【核心】手写DSP算法模块
-│   │   ├── __init__.py
-│   │   ├── fft.py          # 手写FFT实现
-│   │   ├── stft.py         # 手写STFT实现
-│   │   └── mfcc.py         # 手写MFCC实现
-│   ├── models/             # 神经网络模型
-│   │   ├── resnet.py
-│   │   └── transformer.py
-│   ├── utils/              # 工具函数
-│   │   ├── dataset.py      # PyTorch Dataset/Dataloader
-│   │   ├── metrics.py      # 计算 Top-K Accuracy, Precision 等
-│   │   └── plot.py         # 绘图脚本
-│   └── train.py            # 训练脚本
-├── experiments/            # 实验记录 (Jupyter Notebooks)
-│   ├── 01_dsp_verification.ipynb  # 验证手写算法与标准库的误差
-│   ├── 02_task1_retrieval.ipynb   # 任务1：检索实验与超参数分析
-│   ├── 03_task2_classification.ipynb # 任务2：分类训练可视化
-│   └── 04_large_model_compare.ipynb  # 大模型对比实验
-├── scripts/                # 一键运行脚本 (run_task1.sh, run_task2.sh)
-└── report/                 # 最终报告与图表资源
+DSP-HW/
+├── ESC-50/                     # 数据集（不上传git）
+├── src/
+│   ├── dsp_core/               # 自实现DSP算法
+│   │   ├── fft.py              # Cooley-Tukey FFT
+│   │   ├── stft.py             # 短时傅里叶变换
+│   │   └── mfcc.py             # 梅尔频率倒谱系数
+│   ├── classification/
+│   │   ├── models/             # 分类模型
+│   │   │   ├── resnet.py       # ResNet18/34/50
+│   │   │   ├── beats.py        # BEATs + Adapter
+│   │   │   └── clap.py         # CLAP 零样本/微调
+│   │   ├── CLAP/               # CLAP 源码
+│   │   ├── train.py            # 训练脚本
+│   │   ├── features.py         # 特征提取
+│   │   └── augment.py          # 数据增强
+│   └── utils/
+│       └── dataset.py          # ESC-50 数据加载器
+├── external/
+│   └── BEATs.py                # BEATs 模型（Microsoft）
+├── scripts/
+│   ├── run_frame_experiments.py # 帧长/帧移实验
+│   ├── grid_search.py          # 超参数搜索
+│   └── test_clap_zeroshot.py   # CLAP 零样本测试
+├── experiments/
+│   └── 01_dsp_verification.ipynb # DSP 算法验证
+├── checkpoints/                # 模型权重
+├── report/
+│   └── main.tex                # 最终报告（LaTeX）
+└── ref/                        # 参考资料
 ```
 
-## Task-description
+---
 
-![](task-describe.png)
+## 快速开始
 
-> ## Requirements
-> 
-> 任务1：声音检索
-> 
-> 【代码实现】
-> 需要自己实现FFT、STFT、MFCC等算法。
-> 利用最后1个fold作为查询声音，前4个fold作为候选数据库，判断Top10、Top20中找到相同类别声音的精度。
-> 需要比较不同的帧移、帧长等超参数下的精度。
-> 
-> 任务2：声音分类
-> 
-> 【代码实现】
-> 需要自己实现FFT、STFT、MFCC等算法。
-> 可以自由选择不同的神经网络模型，可以直接调用已有的模型和训练代码。
-> 需要比较不同的帧移、帧长等超参数下模型的分类精度。
-> 利用前4个fold进行训练，利用最后1个fold进行测试。
-> 将该模型用于前面检索任务，对比有无机器学习的效果。
-> 需要与大模型直接分类做对比。
-> 
-> 
-> 【提交内容】
-> 建议使用Pytorch。
-> 报告1份：实现的流程、训练曲线、测试精度、不同setting的比较等。
-> 代码1份：包括readme、requirement。
-> 
-> 分数：50分
-> 时间：16周上课前一天提交所有材料，16周进行项目展示
-> 组队要求：3~5人，报告需要明确每个人的角色和职责
-> 
+### 1. 环境配置
+
+```bash
+# 使用 uv（推荐）
+uv sync
+
+# 或使用 pip
+pip install torch torchvision torchaudio
+pip install numpy scipy librosa numba tqdm
+pip install laion-clap transformers
+```
+
+### 2. 下载 ESC-50 数据集
+
+```bash
+# 数据集放置在 ESC-50/ 文件夹
+# 下载地址：https://github.com/karolpiczak/ESC-50
+```
+
+### 3. 下载模型权重
+
+```bash
+# BEATs 权重
+# 从 https://github.com/microsoft/unilm/tree/master/beats 下载
+# 放置于：checkpoints/BEATs_iter3_plus_AS2M.pt
+```
+
+---
+
+## 运行实验
+
+### ResNet18 分类
+
+```bash
+# 标准训练（Mel 频谱图）
+python -m src.classification.train --model resnet18 --feature mel --epochs 50
+
+# 不同帧长配置
+python -m src.classification.train --model resnet18 --n_fft 2048 --hop 512
+python -m src.classification.train --model resnet18 --n_fft 4096 --hop 1024
+```
+
+### BEATs 分类
+
+```bash
+# BEATs + Adapter（冻结编码器）
+python -m src.classification.train --model beats --mode adapter --epochs 50
+
+# BEATs + SpecAugment + Mixup + 解冻
+python -m src.classification.train --model beats --mode adapter \
+    --spec_augment medium --mixup_lam 0.2 --unfreeze_epoch 10
+```
+
+### CLAP 分类
+
+```bash
+# 零样本（无需训练）
+python -m src.classification.train --model clap --mode zeroshot
+
+# 微调（冻结编码器）
+python -m src.classification.train --model clap --mode finetune_frozen
+```
+
+### 帧长/帧移超参数实验
+
+```bash
+# 完整实验（ResNet18 不同 n_fft, hop_length）
+python scripts/run_frame_experiments.py --epochs 30 --gpu 0
+
+# 快速测试
+python scripts/run_frame_experiments.py --quick
+```
+
+---
+
+## 作业要求完成情况
+
+### 任务一：声音检索
+- [x] 自实现 FFT、STFT、MFCC
+- [x] Top-10、Top-20 检索精度
+- [x] 帧长/帧移超参数对比
+- [x] ML vs 非ML 对比（CLAP vs DTW）
+
+### 任务二：声音分类
+- [x] 自实现 FFT、STFT、MFCC
+- [x] 多种神经网络模型
+- [x] 帧长/帧移超参数对比
+- [x] 与大模型对比（CLAP、BEATs）
+- [x] 将分类模型用于检索任务
+
+---
+
+## 报告
+
+最终报告位于 `report/main.tex`，包含：
+
+- DSP 算法实现细节
+- 完整实验结果
+- 消融实验与分析
+- 速度优化技术
+
+---
+
+## 参考资料
+
+- ESC-50: https://github.com/karolpiczak/ESC-50
+- BEATs: https://github.com/microsoft/unilm/tree/master/beats
+- CLAP: https://github.com/microsoft/CLAP
+- PANNs (CNN14): https://github.com/qiuqiangkong/audioset_tagging_cnn

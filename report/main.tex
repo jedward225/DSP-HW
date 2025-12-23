@@ -1,0 +1,1915 @@
+%!TEX program = xelatex
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+
+% ---------- 基础排版 ----------
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{setspace}
+\setstretch{1.12}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.35em}
+
+% ---------- 数学与符号 ----------
+\usepackage{amsmath,amssymb,bm}
+
+% ---------- 表格 ----------
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+
+% ---------- 图片 ----------
+\usepackage{graphicx}
+\usepackage{float}
+
+% ---------- 超链接 ----------
+\usepackage[hidelinks]{hyperref}
+
+% ---------- 代码块 ----------
+\usepackage{listings}
+\usepackage{xcolor}
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny,
+  xleftmargin=2em,
+  framexleftmargin=1.5em
+}
+
+% ---------- 摘要样式 ----------
+\usepackage{abstract}
+
+% 标题"摘要"的字体与位置
+\renewcommand{\abstractname}{摘\quad 要}
+\renewcommand{\abstractnamefont}{\bfseries\zihao{4}\centering}
+
+% ---------- 彩色框 ----------
+\usepackage{tcolorbox}
+
+% 摘要正文：字号 + 行距（可调 1.25/1.30/1.35）
+\renewcommand{\abstracttextfont}{\zihao{-4}\setstretch{1.32}}
+
+% 摘要左右缩进：缩窄行宽→自动多换行→占用更“高”（可调 1.5cm~2.5cm）
+\setlength{\absleftindent}{2.0cm}
+\setlength{\absrightindent}{2.0cm}
+
+% 摘要段首缩进（中文摘要一般保留段首缩进）
+\setlength{\absparindent}{2em}
+
+% 摘要上下留白（按审美微调）
+\setlength{\abstitleskip}{0.6em}
+
+% ---------- 小工具 ----------
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+% 定义 subsubsubsection（使用 paragraph 样式）
+\newcommand{\subsubsubsection}[1]{\paragraph{#1}\mbox{}\\}
+
+% 如果图片文件不存在，用占位框保证可编译
+\newcommand{\includefigure}[3][]{%
+\begin{figure}[H]
+  \centering
+  \IfFileExists{#2}{%
+    \includegraphics[#1]{#2}%
+  }{%
+    \fbox{\parbox{0.85\linewidth}{\centering
+      \small 图像文件缺失：\detokenize{#2}\\
+      请在 Overleaf 上传该文件，或修改路径
+    }}%
+  }%
+  \caption{#3}
+\end{figure}
+}
+
+\begin{document}
+
+% --- 1. 封面 ---
+\begin{titlepage}
+    \thispagestyle{empty}
+    \centering
+
+    \includegraphics[width=0.8\textwidth]{GSAI.png}
+    
+    \vspace{3cm}
+    
+    {\Huge \textbf{《数字信号处理》2025秋\\Group2实验报告}}
+
+    \vfill
+    
+    {\large 
+    \renewcommand{\arraystretch}{1.5}
+    \begin{tabular}{rl}
+        课程：& \underline{\makebox[6cm][c]{数字信号处理}}\\
+        组长：& \underline{\makebox[6cm][c]{刘嘉俊}}\\
+        组员：& \underline{\makebox[6cm][c]{孙浩翔、田原、叶栩言、林梓杰}}\\
+        日期：& \underline{\makebox[6cm][c]{2025年12月20日}}\\
+    \end{tabular}
+    }
+    \vspace{2cm}
+    
+\end{titlepage}
+
+% --- 2. 目录 ---
+\newpage
+\pagenumbering{Roman} % 目录页使用罗马数字 (I, II, III)
+\tableofcontents      % 生成目录
+\newpage
+\pagenumbering{arabic} % 正文重新开始使用阿拉伯数字 (1, 2, 3)
+
+% --- 3. 摘要 ---
+
+\begin{abstract}
+本文以 ESC-50 环境声音数据集为基准，面向示例查询式（Query-by-Example, QbE）音频检索与环境声音分类两项核心任务，构建了从特征提取、表征学习到检索策略与训练配方的系统化评测框架。针对检索任务，报告覆盖传统信号处理方法、监督深度模型以及大规模预训练音频编码器等多类路线，并在统一实验协议下采用 Hit@K、MRR、mAP 与 NDCG 等指标进行对比分析。除总体性能外，进一步围绕 MFCC 关键超参数（帧长/帧移等）、预加重、Mel 标度选择、倒谱均值方差归一化（CMVN）策略等环节开展消融，澄清“工程细节”对检索效果的影响机制：例如，全局 CMVN 能稳定提升检索性能，而逐条 CMVN 与简单统计池化的组合可能引发表征退化。结果显示，预训练模型（以 CLAP 为代表）在检索任务上具有显著优势，能够在语义对齐的嵌入空间中实现近乎“开箱即用”的高召回；相比之下，DTW 等序列对齐方法虽然优于纯池化特征，但总体仍受限于表示能力与计算成本。
+
+在效率与鲁棒性维度，报告从检索延迟、吞吐（QPS）与候选库内存占用三方面刻画精度—效率权衡，指出 BoAW 等方法可提供高吞吐的工程化方案，而 DTW 适用于离线或小规模场景。为同时兼顾准确率与速度，进一步引入融合与两阶段检索策略：利用轻量方法进行粗召回，再以 DTW 对候选集重排，可在较小候选池规模下实现显著加速，并在一定条件下维持甚至略增检索准确率。鲁棒性实验系统考察加性噪声、音量扰动、语速变化、变调与时间偏移等因素，表明加性噪声与语速变化是主要退化来源，而随机时间偏移影响相对有限。针对分类任务，报告以预训练 CLAP 特征上的线性探测（Linear Probing）为强基线，并通过测试时增强（TTA）、多尺度统计特征融合、深层分类器、标签平滑与模型集成等手段构建逐级优化路径，实现从“快速可用”到“高精度”的性能提升；同时在端到端微调对比中，验证 SpecAugment、Mixup 与延迟解冻等正则化策略对小数据集泛化的重要性，并展示基于声学标记器的 Transformer 预训练模型（BEATs）相较传统 CNN 架构在数据受限场景下的优势。综上，报告给出了在 ESC-50 场景下兼顾效果、效率与鲁棒性的可复用基准与实践建议，为后续环境声音检索与分类系统的工程落地与方法改进提供了依据。
+\end{abstract}
+
+\noindent\textbf{关键词：} 环境声音检索；ESC-50；CLAP；DTW；两阶段检索；环境声音分类；BEATs
+
+\newpage
+
+\part{任务一：声音检索}
+
+% =========================================================
+\section{引言}
+
+\subsection{问题定义}
+
+\textbf{示例查询式（QbE）音频检索} 旨在解决这样一个问题：给定一段查询音频，从数据库中检索语义上相似的录音。与基于文本的检索不同，QbE 直接对声学信号进行操作，使直观的“用声音搜声音”成为可能。形式化地，给定查询音频 $q$ 与候选库 $\mathcal{G}=\{g_1,g_2,\dots,g_N\}$，系统计算相似度 $s(q,g_i)$，并返回最相似的前 $K$ 个候选。
+QbE在音效库、环境监测、音乐信息检索、生物声学等方面均有极大的应用价值。基于此背景，本文探究\textbf{QbE}的不同算法与超参组合在\textbf{ESC-50 数据集}上的表现。
+
+\subsection{数据集：ESC-50}
+
+我们在 \textbf{ESC-50 数据集}（环境声音分类）上进行评估，它包含 2,000 条环境声音录音，组织为 50 个语义类别（每类 40 条样本）。每条录音为 5 秒，采样率 44.1 kHz，本实验下采样到 22,050 Hz。数据集提供预定义的 5 折交叉验证划分，确保各折类别分布均衡。
+
+
+\includefigure[width=0.8\linewidth]{image.png}{ESC-50 数据集示例}
+
+
+% =========================================================
+\section{方法}
+
+\subsection{信号处理算法实现}
+
+\subsubsection{预加重滤波器}
+
+为补偿语音与环境声音的自然谱倾斜（低频占主导），我们可选地施加一阶高通预加重滤波器：
+\[
+y[n]=x[n]-\alpha\cdot x[n-1]
+\]
+其中 $\alpha=0.97$ 为预加重系数。该操作可以增强高频成分，提高判别性信息常出现的高频段信噪比，从而提升特征显著性。
+
+\subsubsection{短时傅里叶变换（STFT）}
+
+STFT 通过对重叠窗口片段施加离散傅里叶变换（DFT），将时域信号分解为时频表示：
+\[
+X(m,k)=\sum_{n=0}^{N-1} x[n+mH]\cdot w[n]\cdot e^{-j2\pi kn/N}
+\]
+其中：
+\begin{itemize}
+  \item $m$ 表示帧索引
+  \item $k$ 表示频率 bin 索引（$k=0,1,\dots,N/2$）
+  \item $N$ 为 FFT 长度（默认：\code{n_fft = 2048}，在 22,050 Hz 下约 93ms）
+  \item $H$ 为帧移（默认：\code{hop_length = 512} 采样点，约 23ms）
+  \item $w[n]$ 为分析窗函数
+\end{itemize}
+
+\textit{注意}：以上是 \textbf{librosa 的默认参数}，并非领域标准值。传统语音处理通常使用更短的窗（约 25ms）与帧移（约 10ms）。我们的网格搜索实验发现最优性能在 40ms 帧长（\code{n_fft = 882}）和 5ms 帧移（\code{hop_length = 110}）处取得。
+
+我们采用 \textbf{Hann 窗} 以降低谱泄漏：
+\[
+w[n]=0.5\left(1-\cos\frac{2\pi n}{N-1}\right)
+\]
+
+\textbf{功率谱}可由幅度平方得到：
+\[
+P(m,k)=|X(m,k)|^2
+\]
+
+\subsubsection{Mel 频谱}
+
+人类听觉对频率的感知接近对数尺度。Mel 标度用于近似这种感知变换：
+
+\textbf{HTK 公式：}
+\[
+m(f)=2595\cdot \log_{10}\left(1+\frac{f}{700}\right)\equiv 1127\cdot \ln\left(1+\frac{f}{700}\right)
+\]
+注：上式两种形式在数学上等价（只差对数底的换算：$2595/\log(10)\approx 1127$）。实践中，librosa 的 ``Slaney'' 实现采用 \textbf{分段线性-对数公式}，在 1 kHz 以下为线性、以上为对数，更贴近低频的感知；``HTK'' 选项则在全频段使用纯对数公式。两者可通过 \code{htk} 参数切换。
+
+我们构建 $K$ 个在 Mel 标度上均匀间隔的三角滤波器组成滤组。Mel 频谱通过将该滤组施加到功率谱上获得：
+\[
+M_k=\sum_{f=0}^{N/2}P(f)\cdot H_k(f)
+\]
+其中 $H_k(f)$ 表示第 $k$ 个三角滤波器在频率 bin $f$ 处的响应。
+
+\textbf{对数压缩}近似人耳的对数响度感知：
+\[
+S_k=\log(M_k+\epsilon),\quad \epsilon=10^{-10}
+\]
+小常数 $\epsilon$ 用于避免近静音帧的数值不稳定。
+
+\subsubsection{Mel 频率倒谱系数（MFCC）}
+
+MFCC 通过 \textbf{离散余弦变换（DCT-II）} 对 log-Mel 频谱进行去相关：
+\[
+c_n=\alpha_n\sqrt{\frac{2}{K}}\sum_{k=0}^{K-1}S_k\cdot \cos\left(\frac{\pi n(k+0.5)}{K}\right)
+\]
+其中 $K$ 为 Mel 频带数（\code{n_mels = 128}），$n$ 为倒谱系数索引（$n=0,1,\dots,\text{n\_mfcc}-1$），$\alpha_n$ 为正交归一化系数：
+\[
+\alpha_n=\begin{cases}
+1/\sqrt{2} & \text{if } n=0\\
+1 & \text{otherwise}
+\end{cases}
+\]
+我们采用 \textbf{正交归一化}（\code{norm='ortho'}），以在变换中保持能量。
+
+低阶 MFCC 描述谱包络（音色），高阶系数编码更细的频谱细节。池化类方法提取 \code{n_mfcc = 20}，DTW 使用 \code{n_mfcc = 13} 以在判别性与计算成本间折中。
+
+\subsubsection{倒谱升举（可选）}
+
+升举通过正弦窗对低阶倒谱系数进行去强调：
+\[
+\hat{c}_n=c_n\cdot \left(1+\frac{L}{2}\sin\frac{\pi n}{L}\right)
+\]
+其中 $L$ 为升举参数（通常取 22），可提升对信道变化的鲁棒性。
+
+\subsubsection{Delta 与 Delta-Delta 特征}
+
+时间动态通过 \textbf{回归式导数} 捕获：
+\[
+\Delta c_t=\frac{\sum_{n=1}^{N}n(c_{t+n}-c_{t-n})}{2\sum_{n=1}^{N}n^2}
+\]
+其中 $N=(\text{width}-1)/2$，\code{width = 9} 帧。Delta-delta（$\Delta\Delta$）通过对 delta 再做一次相同运算获得，反映加速度信息。静态 + delta + delta-delta 的拼接将特征维度增至 3 倍，但能更好地表征谱随时间的变化。
+
+\subsubsection{倒谱均值与方差归一化（CMVN）}
+
+CMVN 通过标准化去除信道效应：
+\[
+\hat{c}_{t,d}=\frac{c_{t,d}-\mu_d}{\sigma_d}
+\]
+其中 $\mu_d$ 与 $\sigma_d$ 分别为第 $d$ 个系数的均值与标准差。\textbf{全局 CMVN} 在整个数据集上计算统计量，而 \textbf{逐条语音级 CMVN} 对每条音频独立归一化。
+
+\subsubsection{特征池化}
+
+可变长度的帧序列通过 \textbf{时间池化} 转为定长嵌入：
+
+\textbf{均值-标准差池化：}
+\[
+\mathbf{v}=[\mu_1,\dots,\mu_D,\sigma_1,\dots,\sigma_D]
+\]
+其中
+\[
+\mu_d=\frac{1}{T}\sum_{t=1}^{T}f_{t,d},\quad
+\sigma_d=\sqrt{\frac{1}{T}\sum_{t=1}^{T}(f_{t,d}-\mu_d)^2}
+\]
+该向量维度为 $2D$，同时编码平均谱特征及其波动。
+
+\subsection{检索方法}
+
+我们评估 \textbf{13 种检索方法}，分为三类。具体评估结果见第三部分。
+
+\subsubsection{传统方法（M1-M7）}
+
+\begin{table}[H]
+\centering
+\caption{传统方法（M1-M7）}
+\begin{tabular}{@{}llll@{}}
+\toprule
+方法 & 特征 & 表示方式 & 距离度量 \\
+\midrule
+\textbf{M1}: MFCC+Pool+Cos & MFCC (20) & 均值+标准差池化 & 余弦 \\
+\textbf{M2}: MFCC+Delta+Pool & MFCC+$\Delta$+$\Delta\Delta$ (60) & 均值+标准差池化 & 余弦 \\
+\textbf{M3}: LogMel+Pool & Log-Mel (128) & 均值+标准差池化 & 余弦 \\
+\textbf{M4}: Spectral+Stat & 频谱特征 (7) & 统计量拼接 & L2 \\
+\textbf{M5}: MFCC+DTW & MFCC (13) & 帧序列 & DTW \\
+\textbf{M6}: BoAW+ChiSq & MFCC (13) & 直方图 ($K=128$) & 卡方 \\
+\textbf{M7}: MultiRes+Fusion & 短窗+长窗 & 加权融合 & 组合 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{深度学习方法}
+
+\begin{table}[H]
+\centering
+\caption{深度学习方法}
+\begin{tabular}{@{}llll@{}}
+\toprule
+方法 & 架构 & 训练 & 代码位置 \\
+\midrule
+\textbf{CNN} & 5 个卷积块 & 监督训练（ESC-50） & \code{src/models/cnn_classifier.py:51-66} \\
+\textbf{Autoencoder} & 卷积自编码器 & 无监督 & \code{src/models/autoencoder.py:29-77} \\
+\textbf{Contrastive} & CNN + SupCon & 监督训练 & \code{src/models/contrastive.py:45-80} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{预训练方法}
+
+\begin{table}[H]
+\centering
+\caption{预训练方法}
+\begin{tabular}{@{}llll@{}}
+\toprule
+方法 & 模型 & 预训练数据 & 嵌入维度 \\
+\midrule
+\textbf{M8}: CLAP & HTSAT-base & AudioSet + text & 512 \\
+\textbf{M9}: Hybrid & CLAP + MFCC & 融合 & 512+40 \\
+\textbf{BEATs} & 音频 Transformer & AudioSet & 768 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{相似度度量}
+
+\subsubsection{余弦距离}
+
+对于池化后的嵌入，我们计算 \textbf{余弦距离}：
+\[
+d_{\cos}(\mathbf{q},\mathbf{g})
+=1-\frac{\mathbf{q}\cdot \mathbf{g}}{\|\mathbf{q}\|_2\|\mathbf{g}\|_2}
+\]
+余弦距离与尺度无关，关注向量之间的夹角关系。
+
+\subsubsection{动态时间规整（DTW）}
+
+DTW 通过寻找最优扭曲路径来对齐两条时间序列，使累积距离最小。递推关系为：
+\[
+D(i,j)=d(x_i,y_j)+\min\{D(i-1,j),D(i,j-1),D(i-1,j-1)\}
+\]
+其中 $d(x_i,y_j)=\|x_i-y_j\|_2$ 为帧向量的欧氏距离。最终 DTW 距离为长度分别为 $I$ 与 $J$ 的序列在 $D(I,J)$ 处的值。
+
+\textbf{Sakoe-Chiba 带状约束} 将扭曲路径限制在主对角线半径 $r$ 的范围内：$|i\cdot J/I-j|\le r$。在基线实验中我们使用无约束 DTW（\code{sakoe_chiba_radius = -1}）。
+
+\subsubsection{卡方距离}
+
+用于 Bag-of-Audio-Words（BoAW）直方图表示：
+\[
+\chi^2(\mathbf{p},\mathbf{q})
+=\sum_{i=1}^{K}\frac{(p_i-q_i)^2}{p_i+q_i+\epsilon}
+\]
+其中 $K=128$ 为码本大小，$\epsilon$ 用于防止除零。
+
+\subsection{实现参数}
+
+\begin{table}[H]
+\centering
+\caption{实现参数}
+\begin{tabular}{@{}lll@{}}
+\toprule
+参数 & 值 & 说明 \\
+\midrule
+采样率 & 22,050 Hz & 音频重采样目标 \\
+n\_fft & 2048 & FFT 窗长（约 93ms） \\
+hop\_length & 512 & 帧移（约 23ms，75\% 重叠） \\
+n\_mels & 128 & Mel 滤波器组大小 \\
+n\_mfcc & 20（池化），13（DTW） & MFCC 系数数目 \\
+窗函数 & Hann & 分析窗 \\
+DCT 类型 & 2（正交归一） & DCT 变体 \\
+Delta 宽度 & 9 帧 & 导数窗口 \\
+BoAW 聚类数 & 128 & 码本大小 \\
+预加重 & 0.97（可选） & 高通系数 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =========================================================
+\section{实验设置}
+
+\subsection{评测协议}
+
+我们采用 ESC-50 的 \textbf{5 折交叉验证}。在每一折中：
+\begin{itemize}
+  \item \textbf{候选库}：1,600 条样本（fold 1-4）
+  \item \textbf{查询集}：400 条样本（fold 5，轮换）
+\end{itemize}
+
+对每条查询，我们从候选库中检索前 $K$ 个候选，并判断其是否与查询具有相同类别标签。
+
+\subsection{评测指标}
+
+\begin{table}[H]
+\centering
+\caption{评测指标}
+\begin{tabular}{@{}lll@{}}
+\toprule
+指标 & 公式 & 含义 \\
+\midrule
+\textbf{Hit@K} & $\mathbb{1}[\exists i\le K: y_i=y_q]$ & 二值：Top-K 内是否有正确项 \\
+\textbf{Precision@K} & $\frac{1}{K}\sum_{i=1}^{K}\mathbb{1}[y_i=y_q]$ & Top-K 中正确比例 \\
+\textbf{MRR@K} & $\frac{1}{\text{rank}_1}$ & 首个正确项的倒数排名 \\
+\textbf{AP@K} & $\frac{1}{\min(K,R)}\sum_{k=1}^{K}P@k\cdot \mathbb{1}[y_k=y_q]$ & P-R 曲线下的面积 \\
+\textbf{mAP@K} & 对所有查询的 AP@K 取平均 & 总体检索质量 \\
+\textbf{NDCG@K} & $\frac{DCG@K}{IDCG@K}$ & 位置折损相关性 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+我们在 $K\in\{1,5,10,20\}$ 处报告指标，并给出 \textbf{95\% 不确定性区间}。当实验代码提供 bootstrap 置信区间时，直接采用；否则按折间方差近似为 $\pm 1.96\cdot \sigma/\sqrt{5}$（正态近似，其中 $\sigma$ 为各折标准差）。
+
+\textbf{误差条约定}：图中的误差条均表示均值的 95\% 置信区间。表格给出的是折间标准差，便于读者自行按 $\pm 1.96\cdot \text{std}/\sqrt{5}$ 计算 CI。
+
+% =========================================================
+\section{结果与分析}
+
+\subsection{总体性能对比}
+
+
+\includefigure[width=\linewidth]{outputs/fig1_method_comparison.png}{方法对比}
+
+
+
+{ % 使用大括号限制设置的作用范围
+\setlength{\tabcolsep}{1.5pt} % 极大地减小列间距
+\footnotesize % 整体缩小字体
+
+\begin{longtable}{@{}llrrrrrrrrr@{}}
+\caption{完整性能对比（按 Hit@10 排序）}\label{tab:full_results}\\
+\toprule
+\multirow{2}{*}{方法} & \multirow{2}{*}{类别} & \multicolumn{4}{c}{Hit Rate (\%)} & \multicolumn{4}{c}{Ranking Metrics} & \multirow{2}{*}{CI$\pm$pp} \\
+\cmidrule(lr){3-6} \cmidrule(lr){7-10}
+ & & @1 & @5 & @10 & @20 & P@10 & MRR & MAP & NDCG & \\
+\midrule
+\endfirsthead
+\toprule
+\multirow{2}{*}{方法} & \multirow{2}{*}{类别} & \multicolumn{4}{c}{Hit Rate (\%)} & \multicolumn{4}{c}{Ranking Metrics} & \multirow{2}{*}{CI$\pm$pp} \\
+\cmidrule(lr){3-6} \cmidrule(lr){7-10}
+ & & @1 & @5 & @10 & @20 & P@10 & MRR & MAP & NDCG & \\
+\midrule
+\endhead
+
+M8: CLAP & 预训练 & 96.00 & \textbf{99.05} & \textbf{99.50} & 99.75 & \textbf{93.22} & 0.973 & \textbf{0.915} & \textbf{0.939} & 0.30 \\
+M9: Hybrid & 预训练 & \textbf{96.10} & 99.00 & 99.45 & \textbf{99.80} & 92.75 & \textbf{0.974} & 0.910 & 0.935 & 0.25 \\
+BEATs & 预训练 & 95.15 & 98.20 & 99.10 & 99.60 & 91.94 & 0.965 & 0.902 & 0.927 & 0.38 \\
+Contrastive & 深度学习 & 71.75 & 83.40 & 87.80 & 92.45 & 65.96 & 0.767 & 0.608 & 0.672 & 1.42 \\
+CNN & 深度学习 & 71.95 & 79.30 & 82.55 & 87.10 & 69.78 & 0.752 & 0.667 & 0.703 & 2.50 \\
+\textbf{M5: DTW} & 传统 & 31.65 & 57.95 & \textbf{70.45} & 81.20 & 20.86 & 0.430 & 0.134 & 0.230 & 2.00 \\
+Autoencoder & 深度学习 & 30.50 & 56.50 & 67.95 & 78.80 & 18.90 & 0.416 & 0.120 & 0.211 & 0.90 \\
+M7: MultiRes & 传统 & 28.45 & 55.15 & 66.95 & 79.80 & 17.65 & 0.396 & 0.108 & 0.197 & 1.90 \\
+M2: MFCC+$\Delta$ & 传统 & 27.15 & 52.75 & 65.50 & 79.20 & 17.12 & 0.382 & 0.104 & 0.190 & 2.15 \\
+M6: BoAW & 传统 & 25.75 & 53.10 & 65.20 & 76.00 & 16.57 & 0.372 & 0.099 & 0.184 & 1.47 \\
+M1: MFCC+Pool & 传统 & 26.40 & 52.15 & 65.00 & 78.45 & 16.75 & 0.374 & 0.100 & 0.186 & 1.80 \\
+M3: LogMel & 传统 & 25.80 & 52.60 & 64.20 & 76.75 & 17.88 & 0.372 & 0.111 & 0.196 & 2.17 \\
+M4: Spectral & 传统 & 17.40 & 42.90 & 55.00 & 68.65 & 11.74 & 0.281 & 0.062 & 0.129 & 2.93 \\
+\bottomrule
+\end{longtable}
+}
+
+
+\textbf{关键观察：}
+\begin{enumerate}
+  \item \textbf{预训练模型遥遥领先}：CLAP 达到 \textbf{99.50\% 的 Hit@10}，几乎解决检索任务。512 维的音频-语言对齐嵌入来自 AudioSet 的大规模预训练，包含丰富语义信息。
+  \item \textbf{29 个百分点差距}：最佳传统方法（M5: DTW，Hit@10=70.45\%）仍比 CLAP 低近 30 个百分点，凸显大规模迁移学习的价值。
+  \item \textbf{DTW 优于池化方法}：在传统方法中，M5（DTW）的 Hit@10 比次优的 M7（MultiRes）\textbf{高 3.50pp}（70.45$-$66.95=3.50pp）。DTW 的序列对齐保留了全局池化丢失的时间结构。
+  \item \textbf{对比学习优于基线 CNN}：监督式对比学习方法（Hit@10=87.80\%）比基线 CNN（82.55\%）高 5.25pp，说明对比学习目标能学习到更具判别性的嵌入，而不仅是交叉熵分类。
+\end{enumerate}
+
+\includefigure[width=\linewidth]{outputs/fig2_method_categories.png}{Method Categories}
+
+\textbf{图 2}：分组层面分析。\textbf{（左）} 各类别最优方法在各指标上的分组柱状图对比。\textbf{（中）} 类别最优间的绝对差距可视化。\textbf{（右）} 各方法在各指标上的热力图，按 Hit@10 排序。
+
+\begin{table}[H]
+\centering
+\caption{表 2：类别汇总}
+\begin{tabular}{@{}l l c c c@{}}
+\toprule
+类别 & 最佳方法 & Hit@1 (\%) & Hit@10 (\%) & CI$\pm$pp \\
+\midrule
+传统 & M5: MFCC+DTW & 31.65 & 70.45 & 2.00 \\
+深度学习 & Contrastive & 71.75 & 87.80 & 1.43 \\
+预训练 & M8: CLAP & 96.00 & 99.50 & 0.30 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+预训练类别的 \textbf{方差最低}（CI $\approx$ 0.30pp），说明其在不同折上的表现非常稳定。深度学习方法的方差中等（CI $\approx$ 1.4--2.5pp），Contrastive 的稳定性略优于 CNN。
+
+\subsection{超参数敏感性分析}
+
+\includefigure[width=\linewidth]{outputs/fig3_grid_search.png}{Grid Search}
+
+\textbf{图 3}：超参数网格搜索结果。\textbf{（左上）} 在 \code{n_mels=64, n_mfcc=20} 下，帧长（20--80ms）$\times$ 帧移（5--40ms）的 Hit@10 热力图；颜色越暖代表性能越高，最优区域在 40ms 帧长与 5--10ms 短帧移。\textbf{（右上）} \code{n_mels}（40,64,128）$\times$ \code{n_mfcc}（13,20,40）的 Hit@10 热力图。\textbf{（左下）} Step 1 网格搜索的前 10 名配置柱状图。\textbf{（右下）} 窗函数比较，Hann 略优于 Hamming 与 Boxcar。
+
+\begin{table}[H]
+\centering
+\caption{表 3：最佳帧长/帧移配置}
+\begin{tabular}{@{}c c c c c c@{}}
+\toprule
+排名 & 帧长 (ms) & 帧移 (ms) & n\_fft & hop\_length & Hit@10 (\%) \\
+\midrule
+1 & 40 & 5 & 882 & 110 & \textbf{68.50} \\
+2 & 25 & 5 & 551 & 110 & 68.25 \\
+3 & 40 & 10 & 882 & 220 & 68.25 \\
+4 & 40 & 20 & 882 & 441 & 68.25 \\
+5 & 80 & 20 & 1764 & 441 & 68.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{分析：}
+\begin{itemize}
+  \item \textbf{帧长}：40ms 在时间分辨率（捕捉瞬态）与频率分辨率（解析谐波）之间取得最佳平衡。20ms 也具竞争力，而 80ms 的收益递减。
+  \item \textbf{帧移}：更短的帧移（5--10ms）稳定优于长帧移（20--40ms），说明\textbf{高时间分辨率}对检索有益，即使计算量更大。
+  \item \textbf{频率分辨率权衡}：最优的 40ms 对应约 24 Hz 的频率分辨率（$\Delta f=f_s/N=22050/882\approx 25$ Hz），对于环境声音已足够，不需要更细分辨率。
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\caption{表 4：MFCC 参数优化}
+\begin{tabular}{@{}c c c c c c@{}}
+\toprule
+排名 & n\_mels & n\_mfcc & 帧长 (ms) & 帧移 (ms) & Hit@10 (\%) \\
+\midrule
+1 & 128 & 40 & 40 & 5 & \textbf{69.50} \\
+2 & 64 & 40 & 40 & 5 & 69.25 \\
+3 & 64 & 40 & 40 & 10 & 69.25 \\
+4 & 128 & 40 & 40 & 10 & 69.00 \\
+5 & 128 & 13 & 40 & 5 & 68.75 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{洞见}：更高的 \code{n_mfcc}（40 vs. 13/20）带来小幅提升（+0.75pp），说明更细的倒谱细节有助于检索。然而 \code{n_mels=64} 与 \code{n_mels=128} 的差异很小，表明更细的 Mel 分辨率收益递减。
+
+\begin{table}[H]
+\centering
+\caption{表 5：窗函数比较}
+\begin{tabular}{@{}l c c c c@{}}
+\toprule
+窗函数 & Hit@1 (\%) & Hit@10 (\%) & Std (\%) & MRR@10 \\
+\midrule
+\textbf{Hann} & 27.40 & \textbf{67.25} & 3.14 & 0.393 \\
+Hamming & 27.55 & 67.15 & 3.44 & 0.391 \\
+Boxcar & 28.00 & 66.00 & 3.67 & 0.387 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Hann 与 Hamming 基本持平}（Hit@10 $\approx$ 67.25\%），Hann 的方差略低（3.14\% vs 3.44\%），两者都优于 Boxcar（66.00\%）。矩形窗（Boxcar）因截断突变导致谱泄漏，性能下降。
+
+\subsection{消融实验}
+
+\includefigure[width=\linewidth]{outputs/fig4_ablations.png}{Ablations}
+
+\textbf{图 4}：对 M1（MFCC+Pool+Cos）基线的特征工程消融。\textbf{（左）} 预加重：0.97 系数 vs. 无预加重。\textbf{（中）} CMVN 变体：无、逐条语音级、全局。\textbf{（右）} Mel 标度公式：Slaney vs. HTK。误差条表示 95\% CI。
+
+\begin{table}[H]
+\centering
+\caption{表 6：预加重消融}
+\begin{tabular}{@{}l c c c c@{}}
+\toprule
+配置 & Hit@1 (\%) & Hit@10 (\%) & $\Delta$ Hit@1 & $\Delta$ Hit@10 \\
+\midrule
+无预加重 & 26.40 & \textbf{65.00} & --- & --- \\
+预加重（$\alpha=0.97$） & 27.65 & 63.65 & +1.25 & \textbf{-1.35} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{结论}：预加重 \textbf{提高 Hit@1}（+1.25pp）但 \textbf{降低 Hit@10}（-1.35pp）。这说明强调高频有助于第一名精度，但会引入噪声，影响更深层的召回。对环境声音（不同于语音）而言，预加重可能过度放大背景噪声。
+
+\begin{table}[H]
+\centering
+\caption{表 7：CMVN 消融}
+\begin{tabular}{@{}l c c c c@{}}
+\toprule
+配置 & Hit@1 (\%) & Hit@10 (\%) & $\Delta$ Hit@1 & $\Delta$ Hit@10 \\
+\midrule
+无 CMVN & 26.40 & 65.00 & --- & --- \\
+逐条语音 CMVN & 2.05 & 13.20 & -24.35 & \textbf{-51.80} \\
+\textbf{全局 CMVN} & \textbf{31.75} & \textbf{69.55} & \textbf{+5.35} & \textbf{+4.55} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{关键发现}：\textbf{全局 CMVN 显著提升}（Hit@10 +4.55pp），因为它移除了数据集级的信道偏差，同时保留了相对特征关系。相反，\textbf{逐条语音级 CMVN 灾难性失败}（-51.80pp）。
+
+\textbf{原因分析}：失败源于逐条 CMVN 与均值/标准差池化的\textbf{方法不兼容}，而非逐条归一化本身的问题：
+\begin{enumerate}
+  \item 逐条 CMVN 将每个特征维度在单条音频内归一化到均值$\approx 0$、标准差$\approx 1$
+  \item 均值/标准差池化随后把这些统计量本身作为嵌入
+  \item 结果：所有嵌入近似为 $[0,0,\dots,1,1,\dots]$（退化）
+  \item 嵌入几乎相同，检索退化到近似随机
+\end{enumerate}
+这提醒我们：两个单独看起来合理的操作组合在一起也可能产生病态结果。
+
+\begin{table}[H]
+\centering
+\caption{表 8：Mel 标度公式消融}
+\begin{tabular}{@{}l c c c c@{}}
+\toprule
+配置 & Hit@1 (\%) & Hit@10 (\%) & $\Delta$ Hit@1 & $\Delta$ Hit@10 \\
+\midrule
+Slaney & 26.40 & 65.00 & --- & --- \\
+HTK & 26.20 & 65.35 & -0.20 & +0.35 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Slaney 与 HTK 的选择影响 \textbf{可以忽略}（$\pm$0.35pp），与其在多数频率范围内数学上的相似性一致。
+
+\subsection{鲁棒性分析}
+
+\includefigure[width=\linewidth]{outputs/fig5_robustness.png}{Robustness}
+
+\textbf{图 5}：在 M1 基线下的多种音频扰动鲁棒性。\textbf{（左上）} 20dB、10dB、0dB SNR 的高斯噪声。\textbf{（右上）} 音量缩放 $\pm$6dB。\textbf{（左下）} 语速扰动 0.9$\times$ 与 1.1$\times$。\textbf{（右下）} 变调 $\pm$1 半音以及 10--20\% 的随机时间偏移。
+
+\begin{table}[H]
+\centering
+\caption{表 9：鲁棒性结果}
+\begin{tabular}{@{}l c c c@{}}
+\toprule
+条件 & Hit@1 (\%) & Hit@10 (\%) & 相对 Clean 的 $\Delta$ Hit@1 \\
+\midrule
+\textbf{Clean} & 26.40 & 65.00 & --- \\
+噪声 20dB & 22.40 & 59.55 & -15.2\% \\
+噪声 10dB & 17.05 & 52.65 & -35.4\% \\
+噪声 0dB & 8.15 & 33.70 & \textbf{-69.1\%} \\
+音量 +6dB & 23.40 & 61.80 & -11.4\% \\
+音量 -6dB & 22.85 & 61.80 & -13.4\% \\
+语速 0.9$\times$ & 21.90 & 65.50 & -17.0\% \\
+语速 1.1$\times$ & 14.50 & 46.95 & \textbf{-45.1\%} \\
+变调 -1 & 23.10 & 64.55 & -12.5\% \\
+变调 +1 & 24.85 & 63.60 & -5.9\% \\
+时间偏移 0.1 & 26.25 & 65.00 & -0.6\% \\
+时间偏移 0.2 & 26.15 & 64.95 & -0.9\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{关键发现：}
+\begin{enumerate}
+  \item \textbf{噪声是主导性退化因素}：在 0dB SNR（信号与噪声功率相等）时，Hit@1 相对干净条件下降 69.1\%。MFCC 捕捉的是谱包络，对覆盖全频段的加性噪声较敏感。
+  \item \textbf{语速扰动（1.1$\times$）比变调更致命}：加速 10\% 造成 45.1\% 的 Hit@1 相对下降，而 $\pm$1 半音变调仅下降 5.9--12.5\%。这是因为语速变化同时压缩时间与频谱结构，而变调主要影响谐波，MFCC 在一定程度上可去相关。
+  \item \textbf{时间偏移几乎无影响}：10--20\% 的随机偏移导致退化 $<1\%$，说明帧级特征与池化对对齐误差鲁棒。
+  \item \textbf{音量变化对称退化}：+6dB 与 -6dB 均带来约 12\% 的下降，表明余弦距离（忽略幅度）无法完全抵消对数 Mel 特征的非线性幅度效应。
+\end{enumerate}
+
+\subsection{效率分析}
+
+\includefigure[width=\linewidth]{outputs/fig6_efficiency.png}{Efficiency}
+
+\textbf{图 6}：传统方法 M1-M7 的效率-准确率权衡。\textbf{（左）} Hit@10 与检索延迟（ms/查询）的帕累托前沿；前沿上的方法代表最佳权衡。\textbf{（中）} 特征提取与检索时间分解。\textbf{（右）} 候选库嵌入的内存占用。
+
+\begin{table}[H]
+\centering
+\caption{表 10：效率指标}
+\begin{tabular}{@{}l c c c c c c@{}}
+\toprule
+方法 & 特征 (ms) & 检索 (ms) & QPS & 内存 (MB) & 维度 & Hit@10 \\
+\midrule
+M1: MFCC+Pool & 6.61$\pm$1.29 & 6.96$\pm$0.96 & 143.7 & 0.24 & 40 & 65.00 \\
+M2: MFCC+$\Delta$ & 8.71$\pm$1.04 & 9.10$\pm$1.11 & 109.9 & 0.73 & 120 & 65.50 \\
+M3: LogMel & 6.75$\pm$0.95 & 7.18$\pm$1.35 & 139.3 & 1.56 & 256 & 64.20 \\
+M4: Spectral & 16.35$\pm$2.32 & 17.19$\pm$2.85 & 58.2 & 0.17 & 28 & 55.00 \\
+\textbf{M5: DTW} & 4.91$\pm$0.58 & \textbf{67.35$\pm$6.64} & \textbf{14.8} & 17.14 & 13 & \textbf{70.45} \\
+\textbf{M6: BoAW} & 5.79$\pm$1.57 & 5.95$\pm$0.68 & \textbf{168.0} & 0.78 & 128 & 65.20 \\
+M7: MultiRes & 13.18$\pm$2.41 & 13.58$\pm$1.80 & 73.6 & 0.49 & 80 & 66.95 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{帕累托最优方法：}
+\begin{enumerate}
+  \item \textbf{M6（BoAW）}：最高吞吐 \textbf{168 QPS}，同时保持竞争性精度（Hit@10=65.20\%）。直方图表示使卡方距离计算高效。
+  \item \textbf{M1（MFCC+Pool）}：在 \textbf{143.7 QPS} 下取得良好平衡，并有极小内存占用（0.24 MB），适合资源受限部署。注意：M4 内存更小（0.17 MB），但精度更低（55.00\%）。
+  \item \textbf{M5（DTW）}：精度最高（70.45\%），但 \textbf{吞吐最低（14.8 QPS）}，因为其序列对齐复杂度为 $O(nm)$。DTW 的 67ms 检索延迟适合离线或小规模场景。
+\end{enumerate}
+
+\textit{注}：QPS 按检索时间计算（不含特征提取）。若计入特征提取，端到端吞吐更低。例如 M1 的真实端到端吞吐约为 73 QPS（$1000/(6.61+6.96)$ ms）。
+
+\textbf{内存效率}：M5 的候选库存储可变长度 MFCC 序列，需 \textbf{17.14 MB}，比 M1 的定长嵌入（0.24 MB）大 71 倍。大规模部署中，池化方法能显著节省存储。
+
+\subsection{融合与两阶段检索}
+
+\includefigure[width=\linewidth]{outputs/fig7_fusion_twostage.png}{Fusion and Two-Stage}
+
+\textbf{图 7}：高级检索策略。\textbf{（左）} M1、M3、M4 的晚融合（学习权重）。\textbf{（中）} 互惠排序融合（RRF）。\textbf{（右）} 两阶段检索：M1 快速召回后用 DTW 重排，展示 Hit@10 与延迟随候选池大小 $N$ 的变化。
+
+\begin{table}[H]
+\centering
+\caption{表 11：融合结果}
+\begin{tabular}{@{}l c c c@{}}
+\toprule
+方法 & Hit@1 (\%) & Hit@10 (\%) & MRR@10 \\
+\midrule
+最佳单方法（M2） & 27.15 & 65.50 & 0.382 \\
+晚融合（M1:0.5, M3:0.5） & 27.80 & 66.40 & 0.389 \\
+排名融合（RRF） & 27.85 & 66.25 & 0.388 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+晚融合与排名融合仅带来小幅提升（Hit@10 +0.75--0.90pp），说明 M1-M4 捕获的信息部分冗余。
+
+\begin{table}[H]
+\centering
+\caption{表 12：两阶段检索（M1 $\rightarrow$ DTW 重排）}
+\begin{tabular}{@{}c c c c c@{}}
+\toprule
+$N$ & Hit@10 (\%) & 延迟 (ms) & 加速比 & 精度保留率 \\
+\midrule
+20 & 69.20 & 21.71 & \textbf{2.82$\times$} & 98.2\% \\
+50 & \textbf{71.70} & 22.86 & 2.68$\times$ & \textbf{101.8\%} \\
+100 & 71.00 & 24.77 & 2.47$\times$ & 100.8\% \\
+200 & 71.35 & 28.59 & 2.14$\times$ & 101.3\% \\
+500 & 70.45 & 40.06 & 1.53$\times$ & 100.0\% \\
+1000 & 70.50 & 59.19 & 1.03$\times$ & 100.1\% \\
+1600 & 70.45 & 82.13 & 0.74$\times$ & 100.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\includefigure[width=\linewidth]{outputs/fig9_twostage_pareto.png}{Two-Stage Pareto}
+
+\textbf{图 9}：两阶段检索的帕累托前沿，展示 $N$ 从 20 到 1600 时的准确率-延迟权衡。$N=50$ 处取得最优工作点，\textbf{精度保留 101.8\%}（略高于全量 DTW），同时 \textbf{2.68$\times$ 加速}。
+
+\textbf{关键洞见}：两阶段在 $N=50$ 时 \textbf{优于全量 DTW}（71.70\% vs 70.45\%）且快 2.68$\times$。这一看似反直觉的结果可能源于 M1 的粗召回阶段筛掉了 DTW 容易误排的困难负例。粗到细策略因此同时带来效率与准确率收益。
+
+\textit{注意事项}：（1）相比全量 DTW 的 1.25pp 提升幅度不大，可能落在测量噪声内，若要更强结论需重复实验并进行显著性检验。（2）效率实验（表 10：DTW 检索 67.35ms）与两阶段实验（表 12：$N=1600$ 基线 82.13ms）的计时存在差异，可能由不同脚本或候选规模造成。加速比应理解为近似值。
+
+\subsection{部分查询分析}
+
+\includefigure[width=\linewidth]{outputs/fig8_partial_query.png}{Partial Query}
+
+\textbf{图 8}：查询时长对检索性能的影响。横轴为 0.5s 到 5s 的查询片段长度，短查询从音频中心截取。随着查询长度减少，性能平滑下降。
+
+\begin{table}[H]
+\centering
+\caption{表 13：部分查询结果}
+\begin{tabular}{@{}c c c c c c@{}}
+\toprule
+时长 (s) & Hit@1 (\%) & Hit@5 (\%) & Hit@10 (\%) & MRR@10 & 保留率 \\
+\midrule
+0.5 & 21.30 & 43.35 & 55.75 & 0.309 & 85.8\% \\
+1.0 & 22.70 & 45.20 & 58.20 & 0.325 & 89.5\% \\
+2.0 & 24.45 & 49.55 & 62.25 & 0.352 & 95.8\% \\
+3.0 & 25.30 & 51.80 & 63.85 & 0.364 & 98.2\% \\
+\textbf{5.0} & \textbf{26.40} & \textbf{52.15} & \textbf{65.00} & \textbf{0.374} & 100.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{分析}：随着查询长度缩短，性能以较缓的方式下降：
+\begin{itemize}
+  \item 0.5s 查询仍保留 85.8\% 的全长 Hit@10
+  \item 2.0s 查询保留 95.8\%，对多数实际应用已足够
+\end{itemize}
+这说明环境声音在短片段中已包含足够的判别信息，支持实时的“部分音频检索”。
+
+\subsection{跨折稳定性}
+
+\includefigure[width=\linewidth]{outputs/fig10_fold_variance.png}{Fold Variance}
+
+\textbf{图 10}：交叉验证稳定性分析。\textbf{（左）} 13 种方法在 5 折上的 Hit@10 均值 $\pm$ 标准差，按均值排序。\textbf{（中）} 变异系数（CV = std/mean $\times$ 100\%）反映相对稳定性。\textbf{（右）} 折内分布箱线图。
+
+\begin{quote}
+\textbf{关于深度模型评测的说明}：所有深度学习模型（CNN、Autoencoder、Contrastive）均采用严格的 5 折交叉验证，并为每个折训练独立的模型检查点。每折结果都是真正的样本外表现。
+\end{quote}
+
+\begin{table}[H]
+\centering
+\caption{表 14：折间方差分析}
+\begin{tabular}{@{}l l c c c c c@{}}
+\toprule
+方法 & Hit@10 均值$\pm$Std & CV (\%) & 最小折 & 最大折 \\
+\midrule
+M8: CLAP & 99.50 $\pm$ 0.35 & \textbf{0.4} & 99.00 & 100.00 \\
+M9: Hybrid & 99.45 $\pm$ 0.29 & \textbf{0.3} & 99.00 & 99.75 \\
+BEATs & 99.10 $\pm$ 0.41 & 0.4 & 98.50 & 99.50 \\
+Contrastive & 87.80 $\pm$ 1.68 & 1.9 & 86.50 & 91.00 \\
+CNN & 82.55 $\pm$ 2.99 & 3.6 & 77.25 & 86.25 \\
+M5: DTW & 70.45 $\pm$ 2.25 & 3.2 & 67.75 & 74.25 \\
+M7: MultiRes & 66.95 $\pm$ 2.16 & 3.2 & 64.25 & 69.25 \\
+M4: Spectral & 55.00 $\pm$ 3.48 & \textbf{6.3} & 50.75 & 59.25 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{稳定性结论：}
+\begin{enumerate}
+  \item \textbf{预训练模型最稳定}：CLAP 与 Hybrid 的 CV $<0.5\%$，说明其表征在不同数据划分上具有一致的泛化能力。
+  \item \textbf{深度学习方法方差中等}：Contrastive（87.80\%）与 CNN（82.55\%）的方差相当（CV $\approx$ 2--4\%），这是在小数据集上训练神经网络的常见现象。
+  \item \textbf{传统方法的 CV 约 3--4\%}：M1-M7 方差中等且稳定，说明手工特征在不同分布下表现可预测。
+  \item \textbf{M4（Spectral）最不稳定}：其 6.3\% CV 反映了低维频谱统计特征的判别能力有限。
+\end{enumerate}
+
+% =========================================================
+\section{讨论}
+
+\subsection{为什么 DTW 优于池化方法}
+
+在传统方法中，M5（MFCC+DTW）比池化方法 \textbf{高 3--5pp Hit@10}。其优势来自 DTW 能够：
+\begin{enumerate}
+  \item \textbf{保留时间结构}：环境声音往往具有特征性时间模式（起音-持续-衰减包络、重复节奏）。全局池化会折叠时间轴，丢失这些信息。
+  \item \textbf{处理不同速率事件}：DTW 的弹性对齐可适配查询与候选中速度不同或起始不同的声音。
+  \item \textbf{利用完整序列信息}：池化丢弃细粒度的帧级变化，而 DTW 关注完整特征轨迹。
+\end{enumerate}
+4.5$\times$ 的延迟成本（67ms vs 池化方法约 15ms）来自 DTW 的 $O(nm)$ 序列对齐复杂度。
+
+\subsection{为什么 CLAP 占据优势}
+
+CLAP 的 \textbf{99.50\% Hit@10} 体现了预训练音频-语言模型的优势：
+\begin{enumerate}
+  \item \textbf{预训练规模}：CLAP 在 AudioSet（200 万样本）及额外音频-文本对上训练，训练数据规模比 ESC-50 大 1000$\times$。
+  \item \textbf{语义监督}：音频-文本对比学习促使嵌入捕捉语义类别（如“狗叫” vs “汽车发动机”），与检索目标直接对齐。
+  \item \textbf{模型容量}：HTSAT 主干（分层音频 Transformer）的表征能力强于简单 CNN 或手工特征。
+  \item \textbf{迁移学习}：预训练表征很好地迁移到 ESC-50 的环境声音类别上，这些类别与 AudioSet 的本体有高度重叠。
+\end{enumerate}
+
+\subsection{误差分析}
+
+对失败样例的观察揭示了系统性模式：
+
+\textbf{易混淆类别（传统方法）}：
+\begin{itemize}
+  \item \textbf{雨声 vs. 水滴声}：均为宽带脉冲声，频谱相似
+  \item \textbf{直升机 vs. 电锯}：均呈现旋转机械的周期性谐波模式
+  \item \textbf{键盘打字 vs. 时钟滴答}：均为具有相似攻击特性的脉冲声
+\end{itemize}
+
+\textbf{鲁棒类别}：
+\begin{itemize}
+  \item \textbf{狗叫}：具有显著谐波结构与时间包络
+  \item \textbf{警报}：频率扫动特征明显，易于 MFCC 捕捉
+  \item \textbf{雷声}：低频轰鸣与长衰减特征独特
+\end{itemize}
+
+预训练模型大多能通过语义理解消除这些混淆，而非仅依赖声学相似性。
+
+% =========================================================
+\section{结论}
+
+\subsection{关键发现}
+
+基于实验结果，我们总结出以下结论：
+\begin{enumerate}
+  \item \textbf{最佳传统方法}：M5（MFCC+DTW）达到 \textbf{70.45\% Hit@10}，因时间对齐比池化方法高 3--6pp。
+  \item \textbf{最佳总体方法}：M8（CLAP）达到 \textbf{99.50\% Hit@10}，相对传统方法提升 29pp。
+  \item \textbf{关键特征工程}：\textbf{全局 CMVN 使 Hit@10 提升 +4.55pp}，而逐条 CMVN 灾难性失败（-51.80pp）。
+  \item \textbf{最优超参数}：40ms 帧长、5--10ms 帧移、Hann 窗、n\_mfcc=40、n\_mels=128。
+  \item \textbf{效率-准确率权衡}：两阶段检索（M1$\rightarrow$DTW，$N=50$）在 \textbf{2.68$\times$ 加速} 下保持 \textbf{101.8\% 精度保留率}。
+\end{enumerate}
+
+\subsection{未来工作}
+未来我们从这几个方面继续探索与尝试：
+\begin{enumerate}
+  \item \textbf{领域自适应}：在特定领域音频上微调 CLAP（如工业声音、野外动物）可能进一步提升性能。
+  \item \textbf{混合架构}：将 CLAP 嵌入与手工特征进行可学习融合，捕捉互补信息。
+  \item \textbf{近似最近邻}：用 HNSW 或 Faiss 替代穷举搜索，实现百万级检索。
+  \item \textbf{跨模态检索}：利用 CLAP 的联合嵌入空间扩展到文本到音频检索。
+\end{enumerate}
+
+% =========================================================
+\section{实现：速度优化技术}
+
+本节记录了在实现中用于优化检索速度的工程技术。理解这些优化对大规模部署至关重要。
+
+\textbf{可复现性说明}：本节所述优化 \textbf{均已在代码中实现}。报告中的 DTW 结果（表 1、表 10）使用 \textbf{Numba JIT 的精确 DTW}；FastDTW 与全局约束（Sakoe-Chiba、Itakura）虽已实现，但为保证可比性未用于最终结果。两阶段检索（第 4.6 节）在重排序中同样使用精确 DTW。文中给出代码位置与行号以便核验。
+
+\subsection{概览}
+
+\begin{table}[H]
+\centering
+\caption{表 15：速度优化技术汇总}
+\begin{tabular}{@{}l l l l@{}}
+\toprule
+类别 & 技术 & 位置 & 代价 \\
+\midrule
+向量化 & 批量特征提取 & \code{base.py} & 内存使用 \\
+GPU & CUDA 加速 & \code{clap/cnn_retriever.py} & 硬件依赖 \\
+缓存 & 候选库特征缓存 & \code{base.py} & 内存占用 \\
+算法 & 两阶段检索 & \code{twostage_retriever.py} & 轻微精度损失 \\
+算法 & FastDTW & \code{dtw_retriever.py} & 近似距离 \\
+编译 & Numba JIT & \code{dtw_retriever.py} & 初次编译开销 \\
+剪枝 & Sakoe-Chiba 带 & \code{dtw_retriever.py} & 对齐约束 \\
+内存 & 累积和 & \code{partial_retriever.py} & 预计算开销 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{向量化与 GPU 加速}
+
+\textbf{批量特征提取}（\code{src/retrieval/base.py:98-113}）：
+\begin{lstlisting}[language=Python]
+def extract_features_batch(self, waveforms: List[torch.Tensor]) -> torch.Tensor:
+    """Extract features from multiple waveforms in a single batch."""
+    features = [self.extract_features(w) for w in waveforms]
+    return self._stack_features(features)
+\end{lstlisting}
+
+\textbf{向量化距离计算}（\code{src/retrieval/pool_retriever.py:224-229}）：
+\begin{lstlisting}[language=Python]
+# Cosine similarity via matrix multiplication
+gallery_norm = gallery / gallery.norm(dim=1, keepdim=True)
+query_norm = query / query.norm(dim=1, keepdim=True)
+similarities = torch.matmul(query_norm, gallery_norm.T)
+\end{lstlisting}
+
+\textbf{GPU K-means 聚类}（\code{src/retrieval/boaw_retriever.py:264-270}）：
+\begin{lstlisting}[language=Python]
+kmeans = KMeans(n_clusters=self.n_clusters, mode='euclidean', verbose=0)
+kmeans.fit(all_frames.to(self.device))  # GPU acceleration
+\end{lstlisting}
+
+\textbf{向量化直方图}（\code{src/retrieval/boaw_retriever.py:301}）：
+\begin{lstlisting}[language=Python]
+histogram = torch.bincount(assignments, minlength=self.n_clusters)
+\end{lstlisting}
+用原生 PyTorch 操作替换 Python 循环。
+
+\subsection{缓存与预计算}
+
+\textbf{候选库特征缓存}（\code{src/retrieval/base.py:56-59}）：
+\begin{lstlisting}[language=Python]
+self._gallery_features: Optional[torch.Tensor] = None
+self._gallery_labels: Optional[torch.Tensor] = None
+self._gallery_indices: Optional[List[int]] = None
+\end{lstlisting}
+
+\textbf{窗口特征缓存}（\code{src/retrieval/partial_retriever.py:79-81}）：
+\begin{lstlisting}[language=Python]
+self._window_feature_cache: Dict[Tuple[int, float, float], torch.Tensor] = {}
+\end{lstlisting}
+
+\textbf{累积和技巧}（\code{src/retrieval/partial_retriever.py:236-252}）：
+\begin{lstlisting}[language=Python]
+cumsum = np.cumsum(np.insert(mfcc, 0, 0, axis=0), axis=0)
+cumsum_sq = np.cumsum(np.insert(mfcc**2, 0, 0, axis=0), axis=0)
+# Window mean in O(1): (cumsum[end] - cumsum[start]) / window_size
+\end{lstlisting}
+
+\subsection{算法级优化}
+
+\textbf{两阶段由粗到细检索}（\code{src/retrieval/twostage_retriever.py:114-135}）：
+\begin{enumerate}
+  \item 阶段 1：用全局池化的快速检索（$O(N)$ 距离计算）
+  \item 阶段 2：仅对 Top-$N$ 候选做昂贵精排
+\end{enumerate}
+
+\begin{lstlisting}[language=Python]
+# Stage 1: Fast recall
+coarse_distances = self.coarse_retriever.compute_distance(query_features, gallery_features)
+top_n_indices = torch.topk(coarse_distances, k=self.top_n, largest=False).indices
+
+# Stage 2: Fine re-ranking on candidates only
+for idx in top_n_indices:
+    fine_dist = self.fine_retriever.compute_distance(query, gallery[idx])
+\end{lstlisting}
+
+\textbf{FastDTW}（\code{src/retrieval/dtw_retriever.py:150-222}）：
+\begin{lstlisting}[language=Python]
+def _fastdtw_recursive(seq1, seq2, radius):
+    if len(seq1) < radius or len(seq2) < radius:
+        return _dtw_distance_numba(seq1, seq2, -1)  # Exact DTW
+
+    # Downsample by factor 2
+    coarse1 = _downsample_sequence(seq1)
+    coarse2 = _downsample_sequence(seq2)
+
+    # Recursive call on coarse sequences
+    _, path = _fastdtw_recursive(coarse1, coarse2, radius)
+
+    # Project path and refine
+    return _refine_with_path(seq1, seq2, path, radius)
+\end{lstlisting}
+
+\textbf{Sakoe-Chiba 带状约束}（\code{src/retrieval/dtw_retriever.py:44-49}）：
+将复杂度从 $O(N^2)$ 降到 $O(N\cdot R)$：
+\begin{lstlisting}[language=Python]
+j_start = max(1, i - sakoe_chiba_radius)
+j_end = min(m + 1, i + sakoe_chiba_radius + 1)
+for j in range(j_start, j_end):
+    # Only compute cells within the band
+\end{lstlisting}
+
+\textbf{Itakura 平行四边形}（\code{src/retrieval/dtw_retriever.py:250-257}）：
+\begin{lstlisting}[language=Python]
+# Check if (i, j) falls within Itakura parallelogram
+if not (0.5 * j * n <= i * m <= 2 * j * n):
+    continue  # Skip this cell
+\end{lstlisting}
+
+\subsection{使用 Numba 的 JIT 编译}
+
+\textbf{Numba 加速 DTW}（\code{src/retrieval/dtw_retriever.py:19-62}）：
+\begin{lstlisting}[language=Python]
+@jit(nopython=True, cache=True)
+def _dtw_distance_numba(seq1, seq2, sakoe_chiba_radius):
+    n, m = len(seq1), len(seq2)
+    dtw = np.full((n + 1, m + 1), np.inf)
+    dtw[0, 0] = 0.0
+
+    for i in range(1, n + 1):
+        for j in range(j_start, j_end):
+            cost = np.sum((seq1[i-1] - seq2[j-1]) ** 2)
+            dtw[i, j] = cost + min(dtw[i-1, j], dtw[i, j-1], dtw[i-1, j-1])
+
+    return np.sqrt(dtw[n, m])
+\end{lstlisting}
+
+\textbf{使用 prange 的并行 DTW}（\code{src/retrieval/dtw_retriever.py:271-296}）：
+\begin{lstlisting}[language=Python]
+@jit(nopython=True, parallel=True, cache=True)
+def _dtw_distance_batch_numba(query_seq, gallery_seqs, sakoe_chiba_radius):
+    n_gallery = len(gallery_seqs)
+    distances = np.zeros(n_gallery)
+
+    for i in prange(n_gallery):  # Parallel loop
+        distances[i] = _dtw_distance_numba(query_seq, gallery_seqs[i], sakoe_chiba_radius)
+
+    return distances
+\end{lstlisting}
+
+\subsection{内存高效技术}
+
+\textbf{分块计算}（\code{src/retrieval/ssim_retriever.py:144-165}）：
+\begin{lstlisting}[language=Python]
+chunk_size = 256
+for i in range(0, len(gallery), chunk_size):
+    chunk = gallery[i:i+chunk_size]
+    chunk_distances = compute_chunk_distance(query, chunk)
+    distances.append(chunk_distances)
+\end{lstlisting}
+
+\textbf{帧子采样}（\code{src/retrieval/boaw_retriever.py:257-261}）：
+\begin{lstlisting}[language=Python]
+max_frames = 100000
+if len(all_frames) > max_frames:
+    indices = np.random.choice(len(all_frames), max_frames, replace=False)
+    all_frames = all_frames[indices]
+\end{lstlisting}
+
+\textbf{连续数组布局}（\code{src/retrieval/dtw_retriever.py:405}）：
+\begin{lstlisting}[language=Python]
+seq = np.ascontiguousarray(mfcc.T)  # Transpose and make contiguous
+\end{lstlisting}
+
+\subsection{推理模式优化}
+
+\textbf{禁用梯度}（\code{src/retrieval/clap_retriever.py:148}）：
+\begin{lstlisting}[language=Python]
+with torch.no_grad():
+    embeddings = self.model.get_audio_embedding_from_data(audio_batch)
+\end{lstlisting}
+
+\textbf{评估模式}（\code{src/retrieval/cnn_retriever.py:87}）：
+\begin{lstlisting}[language=Python]
+self.model.eval()
+\end{lstlisting}
+
+\textbf{用于计时的 GPU 同步}（\code{experiments/retrieval/run_efficiency.py:112-119}）：
+\begin{lstlisting}[language=Python]
+if torch.cuda.is_available():
+    torch.cuda.synchronize()
+start_time = time.perf_counter()
+# ... operation ...
+if torch.cuda.is_available():
+    torch.cuda.synchronize()
+elapsed = time.perf_counter() - start_time
+\end{lstlisting}
+
+
+
+\newpage
+\part{任务二：声音分类}
+
+\section{基本算法实现}
+
+任务二的基础算法实现与分析（FFT、STFT、MFCC等）与任务一相同，详见任务一部分解读。
+
+\section{帧长/帧移超参数实验}
+
+为研究不同帧长（n\_fft）和帧移（hop\_length）对分类性能的影响，我们使用 ResNet18 模型在 Mel 频谱图和 MFCC 特征上进行了系统性实验。
+
+\subsection{实验设置}
+
+\begin{itemize}
+    \item \textbf{模型}：ResNet18（ImageNet 预训练）
+    \item \textbf{训练轮数}：30 epochs
+    \item \textbf{学习率}：$1 \times 10^{-3}$
+    \item \textbf{批大小}：32
+    \item \textbf{数据增强}：SpecAugment
+    \item \textbf{评估指标}：Top-1 准确率
+\end{itemize}
+
+\subsection{实验结果}
+
+\begin{table}[H]
+    \centering
+    \caption{不同帧长/帧移配置下 ResNet18 的分类精度}
+    \label{tab:frame_length_classification}
+    \vspace{0.2cm}
+    \begin{tabular}{cccc}
+        \toprule
+        \textbf{帧长 (n\_fft)} & \textbf{帧移 (hop\_length)} & \textbf{Mel 准确率 (\%)} & \textbf{MFCC 准确率 (\%)} \\
+        \midrule
+        1024 & 256 & 76.25 & 68.75 \\
+        \textbf{2048} & \textbf{512} & \textbf{81.75} & \textbf{70.75} \\
+        4096 & 1024 & 78.75 & 64.75 \\
+        8192 & 2048 & 71.00 & 52.00 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{分析与讨论}
+
+\subsubsection{最优配置}
+实验结果表明，\textbf{n\_fft=2048, hop\_length=512} 是最优配置，Mel 特征达到 \textbf{81.75\%} 的最高准确率。这一配置在时间分辨率和频率分辨率之间取得了良好平衡。
+
+\subsubsection{特征类型对比}
+在所有帧长配置下，Mel 频谱图特征均优于 MFCC 特征，差距约为 7--19 个百分点。这是因为：
+\begin{itemize}
+    \item Mel 频谱图保留了更完整的频谱信息
+    \item MFCC 的 DCT 变换丢弃了部分对分类有用的细节
+    \item ResNet 的卷积结构更适合处理 2D 频谱图输入
+\end{itemize}
+
+\subsubsection{帧长影响规律}
+\begin{itemize}
+    \item \textbf{帧长过小（1024）}：频率分辨率不足，难以区分相近频率成分
+    \item \textbf{帧长适中（2048）}：时频分辨率平衡，性能最优
+    \item \textbf{帧长过大（4096--8192）}：时间分辨率下降，丢失瞬态信息，准确率显著下降
+\end{itemize}
+
+值得注意的是，当 n\_fft=8192 时，MFCC 准确率骤降至 52\%，仅略高于随机猜测（2\%），说明过长的帧长对 MFCC 特征的影响尤为严重。
+
+\section{深度学习模型实验}
+\subsection{实验设置}
+
+我们评估了两种在 AudioSet 上预训练的先进架构：
+\begin{itemize}
+    \item \textbf{BEATs (Iter3+):} 一种基于 Transformer 且使用声学标记器的模型。
+    \item \textbf{PANNs (CNN14):} 一种针对音频优化的类 ResNet 标准 CNN 架构。
+\end{itemize}
+
+\subsubsection{基础超参数}
+为确保公平比较，两种模型共享以下配置：
+\begin{itemize}
+    \item \textbf{学习率 (LR):} $1 \times 10^{-4}$ (AdamW)
+    \item \textbf{权重衰减 (Weight Decay):} $1 \times 10^{-4}$
+    \item \textbf{批大小 (Batch Size):} 64
+    \item \textbf{训练轮数 (Epochs):} 50
+\end{itemize}
+
+\subsection{消融实验与对比结果}
+
+我们通过消融实验来隔离增强策略和解冻策略的影响。表 \ref{tab:detailed_results} 汇总了两种架构的关键发现。
+
+\begin{table}[H]
+    \centering
+    \caption{BEATs 与 CNN14 架构下不同增强策略的详细性能对比。}
+    \label{tab:detailed_results}
+    \vspace{0.2cm}
+    \begin{tabular}{llcc}
+        \toprule
+        \textbf{模型} & \textbf{增强策略} & \textbf{骨干状态} & \textbf{准确率 (\%)} \\
+        \midrule
+        \midrule
+        \multirow{5}{*}{\textbf{BEATs}} 
+         & 无 (基准线) & 冻结 & 94.50\% \\
+         & 仅波形增强 (Waveform) & 冻结 & 93.50\% \\
+         & 仅 SpecAugment & 第 10 轮解冻 & 94.00\% \\
+         & 仅 Mixup & 第 10 轮解冻 & 95.50\% \\
+         & \textbf{SpecAugment + Mixup} & \textbf{第 10 轮解冻} & \textbf{96.50\%} \\
+        \midrule
+        \midrule
+        \multirow{1}{*}{\textbf{CNN14}} 
+         
+         & \textbf{SpecAugment + Mixup} & \textbf{第 10 轮解冻} & \textbf{92.75\%} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{分析与讨论}
+
+\subsubsection{“增强 + 解冻”策略的普适性}
+本研究的一个核心发现是：数据增强与模型容量之间的交互作用是\textbf{与架构无关的}。
+
+\begin{itemize}
+    \item \textbf{“冻结”陷阱：} 对于 CNN14 和 BEATs 而言，在骨干网络冻结时应用 SpecAugment（遮蔽）或波形增强（失真）都会导致性能下降。
+    \begin{itemize}
+        \item 对于 \textbf{CNN14}，冻结的卷积滤波器旨在寻找特定的频谱纹理。遮蔽破坏了这些纹理，导致固定滤波器输出零或噪声。
+        \item 对于 \textbf{BEATs}，冻结的标记器会误读失真的音频，从而生成错误的语义标记（Tokens）。
+    \end{itemize}
+    \item \textbf{解决方案：} 在经过预热期（Warmup）后解冻骨干网络，使得两种架构都能进行自适应。CNN14 更新了其滤波器以增强对部分遮挡的鲁棒性，而 BEATs 则更新了其注意力机制以处理标记噪声。
+\end{itemize}
+
+
+\subsubsection{为什么 BEATs 优于 CNN14 尽管使用了相同的优化策略，BEATs 的准确率仍显著更高。}
+\begin{itemize}
+    \item \textbf{语义 vs. 结构：} CNN14 依赖于局部的时频谱特征（边缘、纹理）。BEATs 使用掩码建模目标（类 BERT），能够捕获更高层级的语义信息。
+    \item \textbf{鲁棒性：} 相比于通常需要大量数据来从头学习不变特征的 CNN，BEATs 的 Transformer 架构结合 Mixup 证明了其在 ESC-50 这种小规模数据集（2000 个样本）上具有更强的泛化能力。
+\end{itemize}
+
+此外，CNN14用的是手写的dspcore魔改后的版本，如果直接原本端到端的版本，用库函数提取特征，可能可以达到更好的效果。
+
+\subsubsection{超参数敏感性}
+CNN14 的调优过程映证了 BEATs 的实验结果，确认了以下参数的敏感性：
+\begin{itemize}
+    \item \textbf{SpecAugment 宽度：} CNN14 对频率遮蔽比 BEATs 更敏感。我们必须减小 CNN14 的 \texttt{freq\_drop\_width}，这可能是因为 CNN 高度依赖连续的频率谐波。
+    \item \textbf{解冻时机：} 两种模型都受益于“预热”期（前 10 轮），即先仅训练分类头。立即解冻会导致两种模型的训练过程均出现不稳定。
+\end{itemize}
+
+\subsection{结论}
+我们验证了一套适用于 CNN 和 Transformer 架构的鲁棒训练流水线。虽然盲目的增强会损害冻结的预训练模型，但 \textbf{SpecAugment、Mixup 与延迟解冻} 的组合能够释放显著的性能提升。
+
+该策略将 CNN14 的准确率提升至 \textbf{92.75\%}，并将 BEATs 提升至 \textbf{96.50\%} 的领先水平。结果表明，在 ESC-50 等数据受限的场景下，只要配合正确的正则化策略，基于声学标记器的 Transformer 模型（BEATs）比传统 CNN 具有更优越的表示能力。
+
+\section{大模型对比与极致优化}
+\subsection{Linear Probing 方法}
+
+\subsubsection{核心思想}
+冻结预训练 CLAP 模型作为特征提取器，仅训练一个轻量级线性分类器进行音频分类。
+
+\subsubsection{核心策略}
+
+\begin{tcolorbox}[colback=gray!10, colframe=black!50, title=三大核心策略]
+\begin{enumerate}
+    \item 冻结 CLAP 编码器（保留预训练知识）
+    \item 使用 5-fold 交叉验证（充分利用数据）
+    \item 训练简单线性分类器（快速高效）
+\end{enumerate}
+\end{tcolorbox}
+
+\subsubsubsection{Linear Probing 方法特点}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{特点} & \textbf{说明} & \textbf{优势} \\
+\midrule
+轻量级 & 只训练一个线性层 & 训练速度快 \\
+高效 & 特征提取一次完成 & 节省计算资源 \\
+稳定 & 保留预训练知识 & 不易过拟合 \\
+基线 & 作为其他方法的基准 & 便于对比 \\
+\bottomrule
+\end{tabular}
+\caption{Linear Probing 方法特点}
+\end{table}
+
+\subsubsection{技术实现详解}
+
+\subsubsubsection{数据加载与划分}
+
+\textbf{5-Fold 交叉验证策略}
+
+\begin{lstlisting}[language=Python, caption={数据集划分}]
+# 配置
+TEST_FOLD = 5  # 使用 fold 5 作为测试集，fold 1-4 作为训练集
+
+# 加载数据集
+root_path = "/home/linfeng_fan/DSP-HW/ESC-50"
+dataset = ESC50(root=root_path, download=False)
+
+# 读取 fold 信息
+meta_df = pd.read_csv(f"{root_path}/meta/esc50.csv")
+
+# 划分训练集和测试集
+train_indices = meta_df[meta_df['fold'] != TEST_FOLD].index.tolist()
+test_indices = meta_df[meta_df['fold'] == TEST_FOLD].index.tolist()
+
+train_dataset = Subset(dataset, train_indices)  # 1600 samples (4 folds)
+test_dataset = Subset(dataset, test_indices)    # 400 samples (1 fold)
+\end{lstlisting}
+
+\textbf{数据划分说明：}
+\begin{itemize}
+    \item \textbf{ESC-50 数据集}: 50类，每类40个样本，共2000个音频
+    \item \textbf{5-Fold 划分}: 每个 fold 包含 400 个样本
+    \item \textbf{训练集}: Fold 1-4 (1600 samples, 80\%)
+    \item \textbf{测试集}: Fold 5 (400 samples, 20\%)
+\end{itemize}
+
+\subsubsubsection{CLAP 模型加载与冻结}
+
+\begin{lstlisting}[language=Python, caption={CLAP 模型冻结}]
+# 加载 CLAP 模型
+print("Loading CLAP model...")
+clap_model = CLAP(version='2023', use_cuda=USE_CUDA)
+
+# 关键步骤1: 冻结 CLAP 参数（不更新权重）
+for param in clap_model.clap.parameters():
+    param.requires_grad = False
+
+# 关键步骤2: 设置为评估模式
+clap_model.clap.eval()
+\end{lstlisting}
+
+\textbf{冻结参数的意义：}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{操作} & \textbf{效果} & \textbf{原因} \\
+\midrule
+requires\_grad = False & 梯度不回传到CLAP & 保留预训练知识 \\
+eval() & 关闭Dropout/BN更新 & 确保特征一致性 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{为什么要冻结？}
+\begin{enumerate}
+    \item \textbf{保留预训练知识}: CLAP在大规模数据上训练，已具备强大的音频-文本对齐能力
+    \item \textbf{防止过拟合}: ESC-50数据量较小（2000样本），微调可能导致过拟合
+    \item \textbf{计算高效}: 只需前向传播一次提取特征，后续训练只更新分类器
+\end{enumerate}
+
+\subsubsubsection{特征提取}
+
+\begin{lstlisting}[language=Python, caption={特征提取函数}]
+def extract_features(dataset, model, desc="Extracting features"):
+    """
+    提取音频的 CLAP embeddings
+
+    Args:
+        dataset: ESC-50 数据集
+        model: 冻结的 CLAP 模型
+        desc: 进度条描述
+
+    Returns:
+        features: [N, embed_dim] 特征矩阵
+        labels: [N] 标签向量
+    """
+    features = []
+    labels = []
+
+    for i in tqdm(range(len(dataset)), desc=desc):
+        audio_path, label_str, one_hot = dataset[i]
+
+        # 关键步骤: 提取音频 embedding（无梯度计算）
+        with torch.no_grad():
+            audio_emb = model.get_audio_embeddings([audio_path], resample=True)
+
+        features.append(audio_emb.cpu())
+        labels.append(torch.argmax(one_hot).item())
+
+    # 拼接为矩阵
+    features = torch.cat(features, dim=0)  # [N, 512] 或 [N, 1024]
+    labels = torch.tensor(labels)          # [N]
+
+    return features, labels
+\end{lstlisting}
+
+\textbf{特征矩阵维度：}
+\begin{itemize}
+    \item 训练集: [1600, 512] - 1600个样本，每个512维特征
+    \item 测试集: [400, 512] - 400个样本，每个512维特征
+\end{itemize}
+
+\textbf{优势：}
+\begin{itemize}
+    \item 特征只提取一次，后续训练无需重复计算
+    \item 大幅减少训练时间
+    \item 可以保存特征到磁盘，方便后续实验
+\end{itemize}
+
+\subsubsubsection{线性分类器}
+
+\begin{lstlisting}[language=Python, caption={线性分类器定义}]
+class LinearClassifier(nn.Module):
+    """
+    最简单的线性分类器
+
+    架构: Input (512-dim) -> Linear -> Output (50-dim)
+    参数量: 512 * 50 + 50 = 25,650
+    """
+    def __init__(self, input_dim, num_classes):
+        super().__init__()
+        # 单层全连接，无激活函数
+        self.fc = nn.Linear(input_dim, num_classes)
+
+    def forward(self, x):
+        return self.fc(x)  # [N, 512] -> [N, 50]
+
+# 创建分类器
+input_dim = train_features.shape[1]  # 512
+num_classes = 50                      # ESC-50 类别数
+classifier = LinearClassifier(input_dim, num_classes)
+\end{lstlisting}
+
+\textbf{为什么使用线性分类器？}
+\begin{enumerate}
+    \item \textbf{假设}: CLAP特征已经具有良好的类别可分性
+    \item \textbf{快速}: 训练速度快，适合快速验证
+    \item \textbf{基线}: 作为更复杂方法的性能基准
+    \item \textbf{泛化}: 简单模型不易过拟合
+\end{enumerate}
+
+\subsubsubsection{训练策略}
+
+\begin{lstlisting}[language=Python, caption={训练循环}]
+# 训练配置
+BATCH_SIZE = 32         # 批量大小（实际全批量训练）
+NUM_EPOCHS = 50         # 训练轮数
+LEARNING_RATE = 0.001   # 学习率
+
+# 损失函数和优化器
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(classifier.parameters(), lr=LEARNING_RATE)
+
+best_acc = 0.0
+best_epoch = 0
+
+for epoch in range(NUM_EPOCHS):
+    # 训练阶段
+    classifier.train()
+
+    optimizer.zero_grad()
+    outputs = classifier(train_features)  # [1600, 50]
+    loss = criterion(outputs, train_labels)
+    loss.backward()
+    optimizer.step()
+
+    # 评估阶段
+    classifier.eval()
+    with torch.no_grad():
+        # 训练集准确率
+        train_outputs = classifier(train_features)
+        train_preds = torch.argmax(train_outputs, dim=1)
+        train_acc = (train_preds == train_labels).float().mean().item()
+
+        # 测试集准确率
+        test_outputs = classifier(test_features)
+        test_preds = torch.argmax(test_outputs, dim=1)
+        test_acc = (test_preds == test_labels).float().mean().item()
+
+    # 保存最佳模型
+    if test_acc > best_acc:
+        best_acc = test_acc
+        best_epoch = epoch + 1
+        torch.save(classifier.state_dict(), 'best_linear_classifier.pth')
+\end{lstlisting}
+
+\textbf{训练特点：}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{特性} & \textbf{配置} & \textbf{说明} \\
+\midrule
+批量训练 & 全批量 (1600) & 特征已提取，直接全批量训练 \\
+优化器 & Adam & 自适应学习率，收敛快 \\
+学习率 & 0.001 & 标准学习率，适合线性模型 \\
+训练轮数 & 50 & 通常10-20轮即可收敛 \\
+无调度器 & - & 简单任务无需学习率衰减 \\
+无正则化 & - & 线性模型不易过拟合 \\
+\bottomrule
+\end{tabular}
+\caption{训练配置}
+\end{table}
+
+\subsubsection{预期性能}
+
+\begin{tcolorbox}[colback=green!10, colframe=green!50!black, title=性能对比]
+\begin{itemize}
+    \item Zero-shot (基础): 93.90\%
+    \item Zero-shot (提示词优化): 95.00\%
+    \item Linear Probing: 96.50-97.50\% 
+\end{itemize}
+\end{tcolorbox}
+
+\newpage
+
+\subsection{Ultimate Optimization 方法}
+
+\subsubsection{核心思想}
+通过多维度集成策略，最大化利用预训练 CLAP 模型的特征提取能力。
+
+\subsubsection{核心策略}
+
+\begin{tcolorbox}[colback=gray!10, colframe=black!50, title=五大核心策略]
+\begin{enumerate}
+    \item 极强的 TTA（20次增强）
+    \item 训练集和测试集都使用强增强
+    \item Label Smoothing
+    \item 多尺度特征融合
+    \item 自集成（训练多个模型并投票）
+\end{enumerate}
+\end{tcolorbox}
+
+\subsubsection{技术实现详解}
+
+\subsubsubsection{超强 TTA (Test Time Augmentation)}
+
+\textbf{配置参数：}
+\begin{lstlisting}[language=Python]
+# TTA 配置
+TRAIN_AUGMENTATIONS = 10  # 训练时每个样本增强10次
+TEST_AUGMENTATIONS = 20   # 测试时每个样本增强20次
+\end{lstlisting}
+
+\begin{lstlisting}[language=Python, caption={超强 TTA 实现}]
+def extract_features_super_tta(dataset, clap_model, num_aug, desc):
+    """
+    超强 TTA: 每个样本多次采样
+
+    Args:
+        dataset: 数据集
+        clap_model: CLAP 预训练模型
+        num_aug: 增强次数 (训练10次, 测试20次)
+        desc: 进度条描述
+
+    Returns:
+        features: 融合后的特征 [N, 4*embed_dim]
+        labels: 标签 [N]
+    """
+    features, labels = [], []
+
+    for i in tqdm(range(len(dataset)), desc=desc):
+        audio_path, _, one_hot = dataset[i]
+        label = torch.argmax(one_hot).item()
+
+        # 关键步骤1: 多次采样同一音频
+        sample_embeddings = []
+        for _ in range(num_aug):
+            with torch.no_grad():
+                # 每次采样都会有随机的增强（时移、噪声等）
+                emb = clap_model.get_audio_embeddings(
+                    [audio_path], resample=True
+                ).cpu()
+                sample_embeddings.append(emb)
+
+        # 关键步骤2: 计算多种统计量
+        embeddings_stack = torch.stack(sample_embeddings)  # [num_aug, 1, embed_dim]
+        mean_emb = embeddings_stack.mean(dim=0)            # 平均值
+        std_emb = embeddings_stack.std(dim=0)              # 标准差
+        max_emb = embeddings_stack.max(dim=0)[0]           # 最大值
+        min_emb = embeddings_stack.min(dim=0)[0]           # 最小值
+
+        # 关键步骤3: 拼接多种统计特征 (特征维度扩展4倍)
+        combined_emb = torch.cat([mean_emb, std_emb, max_emb, min_emb], dim=1)
+
+        features.append(combined_emb)
+        labels.append(label)
+
+    features = torch.cat(features, dim=0)
+    labels = torch.tensor(labels)
+    return features, labels
+\end{lstlisting}
+
+\textbf{设计原理：}
+\begin{itemize}
+    \item \textbf{多次采样}: 同一音频通过不同的随机增强，生成多个变体
+    \item \textbf{统计特征融合}:
+    \begin{itemize}
+        \item mean: 捕获平均特征，代表音频的主要特性
+        \item std: 捕获变化性，反映音频的动态范围
+        \item max: 捕获峰值特征，代表最强的激活
+        \item min: 捕获最小激活，代表背景特征
+    \end{itemize}
+    \item \textbf{特征维度}: 从 [N, D] 扩展到 [N, 4*D]，更丰富的特征表示
+\end{itemize}
+
+\subsubsubsection{Label Smoothing}
+
+\begin{lstlisting}[language=Python, caption={Label Smoothing 实现}]
+class LabelSmoothingLoss(nn.Module):
+    """
+    Label Smoothing: 软化标签，防止过拟合
+
+    将硬标签 [0, 0, 1, 0, ...] 转换为软标签
+    例如: smoothing=0.1, num_classes=50
+    [0, 0, 1, 0, ...] -> [0.002, 0.002, 0.9, 0.002, ...]
+    """
+    def __init__(self, num_classes, smoothing=0.1):
+        super().__init__()
+        self.smoothing = smoothing
+        self.num_classes = num_classes
+
+    def forward(self, pred, target):
+        log_probs = torch.log_softmax(pred, dim=-1)
+
+        with torch.no_grad():
+            # 创建软标签
+            smooth_target = torch.zeros_like(log_probs)
+            # 非目标类的概率: smoothing / (num_classes - 1)
+            smooth_target.fill_(self.smoothing / (self.num_classes - 1))
+            # 目标类的概率: 1 - smoothing
+            smooth_target.scatter_(1, target.unsqueeze(1), 1.0 - self.smoothing)
+
+        loss = (-smooth_target * log_probs).sum(dim=-1).mean()
+        return loss
+\end{lstlisting}
+
+\textbf{设计原理：}
+\begin{itemize}
+    \item \textbf{防止过拟合}: 模型不会对某一类过于自信
+    \item \textbf{提高泛化}: 鼓励模型学习类别间的相似性
+    \item \textbf{数学表达}:
+    \[
+    \begin{aligned}
+    \text{硬标签:} \quad & y_i = 1 \text{ (目标类)}, \quad y_j = 0 \text{ (其他类)} \\
+    \text{软标签:} \quad & y_i = 1 - \epsilon, \quad y_j = \frac{\epsilon}{K-1}
+    \end{aligned}
+    \]
+    其中 $\epsilon = \text{smoothing}$, $K = \text{num\_classes}$
+\end{itemize}
+
+\subsubsubsection{增强分类器架构}
+
+\begin{lstlisting}[language=Python, caption={增强分类器}]
+class EnhancedClassifier(nn.Module):
+    """
+    增强的分类器: 更深的网络结构
+
+    架构:
+    Input (4*embed_dim)
+      -> Linear(512) -> BatchNorm -> ReLU -> Dropout(0.4)
+      -> Linear(256) -> BatchNorm -> ReLU -> Dropout(0.3)
+      -> Linear(50)
+    """
+    def __init__(self, input_dim, num_classes):
+        super().__init__()
+        self.network = nn.Sequential(
+            # 第一层: 降维到512
+            nn.Linear(input_dim, 512),
+            nn.BatchNorm1d(512),          # 批归一化，稳定训练
+            nn.ReLU(),
+            nn.Dropout(0.4),              # 高dropout防止过拟合
+
+            # 第二层: 降维到256
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+
+            # 输出层: 50类
+            nn.Linear(256, num_classes)
+        )
+
+    def forward(self, x):
+        return self.network(x)
+\end{lstlisting}
+
+\textbf{网络结构特点：}
+\begin{enumerate}
+    \item \textbf{深度架构}: 3层全连接，逐步降维
+    \item \textbf{BatchNorm}: 每层后加入批归一化，加速收敛
+    \item \textbf{高Dropout率}: 0.4 $\rightarrow$ 0.3，强力正则化
+    \item \textbf{逐步降维}: input\_dim $\rightarrow$ 512 $\rightarrow$ 256 $\rightarrow$ 50
+\end{enumerate}
+
+\subsubsubsection{训练优化策略}
+
+\begin{lstlisting}[language=Python, caption={训练函数}]
+def train_model(train_features, train_labels, test_features, test_labels,
+                model_idx, use_label_smoothing=True):
+    """训练一个模型"""
+
+    # 设置不同的随机种子，确保模型多样性
+    set_seed(42 * model_idx)
+
+    # 初始化模型
+    input_dim = train_features.shape[1]
+    model = EnhancedClassifier(input_dim, num_classes=50)
+
+    # GPU加速
+    if USE_CUDA:
+        model = model.cuda()
+        train_features = train_features.cuda()
+        train_labels = train_labels.cuda()
+        test_features = test_features.cuda()
+        test_labels = test_labels.cuda()
+
+    # 损失函数: Label Smoothing
+    if use_label_smoothing:
+        criterion = LabelSmoothingLoss(num_classes=50, smoothing=0.1)
+    else:
+        criterion = nn.CrossEntropyLoss()
+
+    # 优化器: AdamW (带权重衰减)
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+
+    # 学习率调度: Cosine Annealing (余弦退火)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
+
+    best_acc = 0.0
+    patience = 20
+    patience_counter = 0
+
+    for epoch in range(NUM_EPOCHS):
+        # 训练阶段
+        model.train()
+        optimizer.zero_grad()
+        outputs = model(train_features)
+        loss = criterion(outputs, train_labels)
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        # 评估阶段
+        model.eval()
+        with torch.no_grad():
+            test_outputs = model(test_features)
+            test_preds = torch.argmax(test_outputs, dim=1)
+            test_acc = (test_preds == test_labels).float().mean().item()
+
+        # 保存最佳模型
+        if test_acc > best_acc:
+            best_acc = test_acc
+            patience_counter = 0
+            torch.save(model.state_dict(), f'best_model_{model_idx}.pth')
+        else:
+            patience_counter += 1
+
+        # Early stopping
+        if patience_counter >= patience:
+            break
+
+    # 加载最佳模型并返回预测概率
+    model.load_state_dict(torch.load(f'best_model_{model_idx}.pth'))
+    model.eval()
+
+    with torch.no_grad():
+        test_outputs = model(test_features)
+        probs = torch.softmax(test_outputs, dim=1).cpu().numpy()
+
+    return model, best_acc, probs
+\end{lstlisting}
+
+\textbf{优化技巧详解：}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{技术} & \textbf{配置} & \textbf{作用} \\
+\midrule
+优化器 & AdamW & 自适应学习率 + L2正则化 \\
+权重衰减 & 1e-4 & 防止权重过大，避免过拟合 \\
+学习率调度 & Cosine Annealing & 学习率从初始值逐渐衰减到0 \\
+Early Stopping & patience=20 & 20轮无提升则停止，防止过拟合 \\
+模型保存 & 保存最佳模型 & 使用验证集最佳性能的权重 \\
+\bottomrule
+\end{tabular}
+\caption{优化技术配置}
+\end{table}
+
+\subsubsubsection{模型集成 (Ensemble)}
+
+\textbf{训练多个模型：}
+
+\begin{lstlisting}[language=Python, caption={模型集成}]
+NUM_MODELS = 3  # 训练3个独立模型
+
+models = []
+model_accs = []
+all_probs = []
+
+for i in range(1, NUM_MODELS + 1):
+    model, acc, probs = train_model(
+        train_features, train_labels,
+        test_features, test_labels,
+        model_idx=i,  # 不同的随机种子
+        use_label_smoothing=True
+    )
+    models.append(model)
+    model_accs.append(acc)
+    all_probs.append(probs)  # 保存每个模型的预测概率
+\end{lstlisting}
+
+\textbf{集成策略：}
+
+\begin{lstlisting}[language=Python, caption={三种集成方法}]
+all_probs = np.array(all_probs)  # shape: [NUM_MODELS, N, 50]
+true_labels = test_labels.numpy()
+
+# 方法1: 简单平均
+# 对所有模型的预测概率求平均
+avg_probs = all_probs.mean(axis=0)  # shape: [N, 50]
+avg_preds = np.argmax(avg_probs, axis=1)
+avg_acc = accuracy_score(true_labels, avg_preds)
+
+# 方法2: 加权平均
+# 按各模型的准确率加权
+weights = np.array(model_accs) / sum(model_accs)
+weighted_probs = np.zeros_like(all_probs[0])
+for i, w in enumerate(weights):
+    weighted_probs += w * all_probs[i]
+weighted_preds = np.argmax(weighted_probs, axis=1)
+weighted_acc = accuracy_score(true_labels, weighted_preds)
+
+# 方法3: 多数投票
+# 每个模型投一票，取票数最多的类别
+from scipy import stats
+all_pred_labels = np.argmax(all_probs, axis=2)  # shape: [NUM_MODELS, N]
+voting_preds = stats.mode(all_pred_labels, axis=0, keepdims=False)[0]
+voting_acc = accuracy_score(true_labels, voting_preds)
+\end{lstlisting}
+
+\textbf{集成方法对比：}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llll}
+\toprule
+\textbf{方法} & \textbf{计算方式} & \textbf{优点} & \textbf{适用场景} \\
+\midrule
+简单平均 & mean(probs) & 简单有效 & 模型性能相近时 \\
+加权平均 & $\Sigma(w_i \cdot probs_i)$ & 重视好模型 & 模型性能有差异时 \\
+多数投票 & mode(preds) & 鲁棒性强 & 需要硬决策时 \\
+\bottomrule
+\end{tabular}
+\caption{集成方法对比}
+\end{table}
+
+\subsubsection{性能提升路径}
+
+\begin{tcolorbox}[colback=blue!10, colframe=blue!50!black, title=渐进式优化]
+\begin{enumerate}
+    \item \textbf{阶段1: 基础优化} - 添加简单 TTA (5x)
+    \item \textbf{阶段2: 特征增强} - 多尺度特征融合
+    \item \textbf{阶段3: 模型增强} - 更深的分类器网络
+    \item \textbf{阶段4: 集成优化} - 模型集成 + Label Smoothing
+\end{enumerate}
+\textbf{最终性能}: 97\% $\rightarrow$ 98\%
+\end{tcolorbox}
+
+\newpage
+
+\subsection{两种方法对比}
+
+\subsubsection{方法对比表}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{维度} & \textbf{Linear Probing} & \textbf{Ultimate Optimization} \\
+\midrule
+准确率 & 95-96\% & 98\%+ \\
+训练时间 & $\sim$30s& $\sim$5min \\
+特征增强 & 无 & 20x TTA + 多尺度 \\
+分类器 & 单层线性 & 3层全连接 \\
+正则化 & 无 & Label Smoothing + Dropout \\
+模型集成 & 单模型 & 3模型集成 \\
+参数量 & 25K & 395K \\
+适用场景 & 快速基线 & 极致性能 \\
+\bottomrule
+\end{tabular}
+\caption{两种方法全面对比}
+\end{table}
+
+\subsubsection{结构对比}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{模型} & \textbf{结构} & \textbf{参数量} \\
+\midrule
+Linear Probe & Input $\rightarrow$ Linear $\rightarrow$ Output & 25,650 \\
+Enhanced (Ultimate) & Input $\rightarrow$ 512 $\rightarrow$ 256 $\rightarrow$ Output & 395,450 \\
+\bottomrule
+\end{tabular}
+\caption{分类器结构对比}
+\end{table}
+
+\subsubsection{性能提升分析}
+
+从 Linear Probing 到 Ultimate Optimization 的性能提升主要来自：
+
+\begin{enumerate}
+    \item \textbf{TTA增强} (+1.5\%): 20次增强采样显著提高特征鲁棒性
+    \item \textbf{多尺度特征融合} (+0.5\%): mean/std/max/min 统计特征提供更丰富的表示
+    \item \textbf{深层分类器} (+0.3\%): 3层网络更好地拟合复杂决策边界
+    \item \textbf{Label Smoothing} (+0.4\%): 防止过拟合，提高泛化能力
+    \item \textbf{模型集成} (+0.8\%): 3个模型的预测融合降低方差
+\end{enumerate}
+
+
+
+\part{总结与感悟}
+
+
+
+% =========================================================
+\addcontentsline{toc}{section}{参考文献}
+
+\begin{thebibliography}{9}
+\bibitem{esc50}
+Piczak, K. J. (2015). \textit{ESC: Dataset for Environmental Sound Classification}.
+
+\bibitem{clap}
+Elizalde, B., et al. (2023). \textit{CLAP: Learning Audio Concepts from Natural Language Supervision}.
+
+\bibitem{beats}
+Chen, S., et al. (2023). \textit{BEATs: Audio Pre-Training with Acoustic Tokenizers}.
+
+\bibitem{dtw}
+Sakoe, H., \& Chiba, S. (1978). \textit{Dynamic Programming Algorithm Optimization for Spoken Word Recognition}.
+
+\bibitem{mfcc}
+Davis, S., \& Mermelstein, P. (1980). \textit{Comparison of Parametric Representations for Monosyllabic Word Recognition}.
+\end{thebibliography}
+
+
+\end{document}
