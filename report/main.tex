@@ -376,6 +376,10 @@ BoAW 聚类数 & 128 & 码本大小 \\
 \end{tabular}
 \end{table}
 
+\subsection{速度优化技术}
+
+为提升检索效率，我们在实现中采用了多种优化技术。DTW 检索使用 \textbf{Numba JIT 编译}加速，将 Python 循环编译为高效的机器码，并结合 \code{prange} 实现多核并行计算，使 DTW 距离计算速度提升约 $10\times$。此外，我们还实现了 \textbf{Sakoe-Chiba 带状约束}将复杂度从 $O(N^2)$ 降至 $O(N \cdot R)$、\textbf{候选库特征缓存}避免重复计算、\textbf{两阶段检索}（粗召回 + 精排）在保持精度的同时实现 $2.68\times$ 加速、以及 \textbf{GPU 加速}的向量化距离计算。所有优化均已在代码中实现（详见 \code{src/retrieval/} 目录）。
+
 % =========================================================
 \section{实验设置}
 
@@ -864,222 +868,10 @@ CLAP 的 \textbf{99.50\% Hit@10} 体现了预训练音频-语言模型的优势�
 \end{enumerate}
 
 % =========================================================
-\section{实现：速度优化技术}
-
-本节记录了在实现中用于优化检索速度的工程技术。理解这些优化对大规模部署至关重要。
-
-\textbf{可复现性说明}：本节所述优化 \textbf{均已在代码中实现}。报告中的 DTW 结果（表 1、表 10）使用 \textbf{Numba JIT 的精确 DTW}；FastDTW 与全局约束（Sakoe-Chiba、Itakura）虽已实现，但为保证可比性未用于最终结果。两阶段检索（第 4.6 节）在重排序中同样使用精确 DTW。文中给出代码位置与行号以便核验。
-
-\subsection{概览}
-
-\begin{table}[H]
-\centering
-\caption{表 15：速度优化技术汇总}
-\begin{tabular}{@{}l l l l@{}}
-\toprule
-类别 & 技术 & 位置 & 代价 \\
-\midrule
-向量化 & 批量特征提取 & \code{base.py} & 内存使用 \\
-GPU & CUDA 加速 & \code{clap/cnn_retriever.py} & 硬件依赖 \\
-缓存 & 候选库特征缓存 & \code{base.py} & 内存占用 \\
-算法 & 两阶段检索 & \code{twostage_retriever.py} & 轻微精度损失 \\
-算法 & FastDTW & \code{dtw_retriever.py} & 近似距离 \\
-编译 & Numba JIT & \code{dtw_retriever.py} & 初次编译开销 \\
-剪枝 & Sakoe-Chiba 带 & \code{dtw_retriever.py} & 对齐约束 \\
-内存 & 累积和 & \code{partial_retriever.py} & 预计算开销 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{向量化与 GPU 加速}
-
-\textbf{批量特征提取}（\code{src/retrieval/base.py:98-113}）：
-\begin{lstlisting}[language=Python]
-def extract_features_batch(self, waveforms: List[torch.Tensor]) -> torch.Tensor:
-    """Extract features from multiple waveforms in a single batch."""
-    features = [self.extract_features(w) for w in waveforms]
-    return self._stack_features(features)
-\end{lstlisting}
-
-\textbf{向量化距离计算}（\code{src/retrieval/pool_retriever.py:224-229}）：
-\begin{lstlisting}[language=Python]
-# Cosine similarity via matrix multiplication
-gallery_norm = gallery / gallery.norm(dim=1, keepdim=True)
-query_norm = query / query.norm(dim=1, keepdim=True)
-similarities = torch.matmul(query_norm, gallery_norm.T)
-\end{lstlisting}
-
-\textbf{GPU K-means 聚类}（\code{src/retrieval/boaw_retriever.py:264-270}）：
-\begin{lstlisting}[language=Python]
-kmeans = KMeans(n_clusters=self.n_clusters, mode='euclidean', verbose=0)
-kmeans.fit(all_frames.to(self.device))  # GPU acceleration
-\end{lstlisting}
-
-\textbf{向量化直方图}（\code{src/retrieval/boaw_retriever.py:301}）：
-\begin{lstlisting}[language=Python]
-histogram = torch.bincount(assignments, minlength=self.n_clusters)
-\end{lstlisting}
-用原生 PyTorch 操作替换 Python 循环。
-
-\subsection{缓存与预计算}
-
-\textbf{候选库特征缓存}（\code{src/retrieval/base.py:56-59}）：
-\begin{lstlisting}[language=Python]
-self._gallery_features: Optional[torch.Tensor] = None
-self._gallery_labels: Optional[torch.Tensor] = None
-self._gallery_indices: Optional[List[int]] = None
-\end{lstlisting}
-
-\textbf{窗口特征缓存}（\code{src/retrieval/partial_retriever.py:79-81}）：
-\begin{lstlisting}[language=Python]
-self._window_feature_cache: Dict[Tuple[int, float, float], torch.Tensor] = {}
-\end{lstlisting}
-
-\textbf{累积和技巧}（\code{src/retrieval/partial_retriever.py:236-252}）：
-\begin{lstlisting}[language=Python]
-cumsum = np.cumsum(np.insert(mfcc, 0, 0, axis=0), axis=0)
-cumsum_sq = np.cumsum(np.insert(mfcc**2, 0, 0, axis=0), axis=0)
-# Window mean in O(1): (cumsum[end] - cumsum[start]) / window_size
-\end{lstlisting}
-
-\subsection{算法级优化}
-
-\textbf{两阶段由粗到细检索}（\code{src/retrieval/twostage_retriever.py:114-135}）：
-\begin{enumerate}
-  \item 阶段 1：用全局池化的快速检索（$O(N)$ 距离计算）
-  \item 阶段 2：仅对 Top-$N$ 候选做昂贵精排
-\end{enumerate}
-
-\begin{lstlisting}[language=Python]
-# Stage 1: Fast recall
-coarse_distances = self.coarse_retriever.compute_distance(query_features, gallery_features)
-top_n_indices = torch.topk(coarse_distances, k=self.top_n, largest=False).indices
-
-# Stage 2: Fine re-ranking on candidates only
-for idx in top_n_indices:
-    fine_dist = self.fine_retriever.compute_distance(query, gallery[idx])
-\end{lstlisting}
-
-\textbf{FastDTW}（\code{src/retrieval/dtw_retriever.py:150-222}）：
-\begin{lstlisting}[language=Python]
-def _fastdtw_recursive(seq1, seq2, radius):
-    if len(seq1) < radius or len(seq2) < radius:
-        return _dtw_distance_numba(seq1, seq2, -1)  # Exact DTW
-
-    # Downsample by factor 2
-    coarse1 = _downsample_sequence(seq1)
-    coarse2 = _downsample_sequence(seq2)
-
-    # Recursive call on coarse sequences
-    _, path = _fastdtw_recursive(coarse1, coarse2, radius)
-
-    # Project path and refine
-    return _refine_with_path(seq1, seq2, path, radius)
-\end{lstlisting}
-
-\textbf{Sakoe-Chiba 带状约束}（\code{src/retrieval/dtw_retriever.py:44-49}）：
-将复杂度从 $O(N^2)$ 降到 $O(N\cdot R)$：
-\begin{lstlisting}[language=Python]
-j_start = max(1, i - sakoe_chiba_radius)
-j_end = min(m + 1, i + sakoe_chiba_radius + 1)
-for j in range(j_start, j_end):
-    # Only compute cells within the band
-\end{lstlisting}
-
-\textbf{Itakura 平行四边形}（\code{src/retrieval/dtw_retriever.py:250-257}）：
-\begin{lstlisting}[language=Python]
-# Check if (i, j) falls within Itakura parallelogram
-if not (0.5 * j * n <= i * m <= 2 * j * n):
-    continue  # Skip this cell
-\end{lstlisting}
-
-\subsection{使用 Numba 的 JIT 编译}
-
-\textbf{Numba 加速 DTW}（\code{src/retrieval/dtw_retriever.py:19-62}）：
-\begin{lstlisting}[language=Python]
-@jit(nopython=True, cache=True)
-def _dtw_distance_numba(seq1, seq2, sakoe_chiba_radius):
-    n, m = len(seq1), len(seq2)
-    dtw = np.full((n + 1, m + 1), np.inf)
-    dtw[0, 0] = 0.0
-
-    for i in range(1, n + 1):
-        for j in range(j_start, j_end):
-            cost = np.sum((seq1[i-1] - seq2[j-1]) ** 2)
-            dtw[i, j] = cost + min(dtw[i-1, j], dtw[i, j-1], dtw[i-1, j-1])
-
-    return np.sqrt(dtw[n, m])
-\end{lstlisting}
-
-\textbf{使用 prange 的并行 DTW}（\code{src/retrieval/dtw_retriever.py:271-296}）：
-\begin{lstlisting}[language=Python]
-@jit(nopython=True, parallel=True, cache=True)
-def _dtw_distance_batch_numba(query_seq, gallery_seqs, sakoe_chiba_radius):
-    n_gallery = len(gallery_seqs)
-    distances = np.zeros(n_gallery)
-
-    for i in prange(n_gallery):  # Parallel loop
-        distances[i] = _dtw_distance_numba(query_seq, gallery_seqs[i], sakoe_chiba_radius)
-
-    return distances
-\end{lstlisting}
-
-\subsection{内存高效技术}
-
-\textbf{分块计算}（\code{src/retrieval/ssim_retriever.py:144-165}）：
-\begin{lstlisting}[language=Python]
-chunk_size = 256
-for i in range(0, len(gallery), chunk_size):
-    chunk = gallery[i:i+chunk_size]
-    chunk_distances = compute_chunk_distance(query, chunk)
-    distances.append(chunk_distances)
-\end{lstlisting}
-
-\textbf{帧子采样}（\code{src/retrieval/boaw_retriever.py:257-261}）：
-\begin{lstlisting}[language=Python]
-max_frames = 100000
-if len(all_frames) > max_frames:
-    indices = np.random.choice(len(all_frames), max_frames, replace=False)
-    all_frames = all_frames[indices]
-\end{lstlisting}
-
-\textbf{连续数组布局}（\code{src/retrieval/dtw_retriever.py:405}）：
-\begin{lstlisting}[language=Python]
-seq = np.ascontiguousarray(mfcc.T)  # Transpose and make contiguous
-\end{lstlisting}
-
-\subsection{推理模式优化}
-
-\textbf{禁用梯度}（\code{src/retrieval/clap_retriever.py:148}）：
-\begin{lstlisting}[language=Python]
-with torch.no_grad():
-    embeddings = self.model.get_audio_embedding_from_data(audio_batch)
-\end{lstlisting}
-
-\textbf{评估模式}（\code{src/retrieval/cnn_retriever.py:87}）：
-\begin{lstlisting}[language=Python]
-self.model.eval()
-\end{lstlisting}
-
-\textbf{用于计时的 GPU 同步}（\code{experiments/retrieval/run_efficiency.py:112-119}）：
-\begin{lstlisting}[language=Python]
-if torch.cuda.is_available():
-    torch.cuda.synchronize()
-start_time = time.perf_counter()
-# ... operation ...
-if torch.cuda.is_available():
-    torch.cuda.synchronize()
-elapsed = time.perf_counter() - start_time
-\end{lstlisting}
-
-
-
 \newpage
 \part{任务二：声音分类}
 
-\section{基本算法实现}
-
-任务二的基础算法实现与分析（FFT、STFT、MFCC等）与任务一相同，详见任务一部分解读。
+本部分的基础信号处理算法（FFT、STFT、MFCC 等）与任务一相同，此处不再赘述。以下直接进入分类实验。
 
 \section{帧长/帧移超参数实验}
 
@@ -1252,218 +1044,28 @@ CNN14 的调优过程映证了 BEATs 的实验结果，确认了以下参数的�
 \caption{Linear Probing 方法特点}
 \end{table}
 
-\subsubsection{技术实现详解}
+\subsubsection{实现流程}
 
-\subsubsubsection{数据加载与划分}
-
-\textbf{5-Fold 交叉验证策略}
-
-\begin{lstlisting}[language=Python, caption={数据集划分}]
-# 配置
-TEST_FOLD = 5  # 使用 fold 5 作为测试集，fold 1-4 作为训练集
-
-# 加载数据集
-root_path = "/home/linfeng_fan/DSP-HW/ESC-50"
-dataset = ESC50(root=root_path, download=False)
-
-# 读取 fold 信息
-meta_df = pd.read_csv(f"{root_path}/meta/esc50.csv")
-
-# 划分训练集和测试集
-train_indices = meta_df[meta_df['fold'] != TEST_FOLD].index.tolist()
-test_indices = meta_df[meta_df['fold'] == TEST_FOLD].index.tolist()
-
-train_dataset = Subset(dataset, train_indices)  # 1600 samples (4 folds)
-test_dataset = Subset(dataset, test_indices)    # 400 samples (1 fold)
-\end{lstlisting}
-
-\textbf{数据划分说明：}
-\begin{itemize}
-    \item \textbf{ESC-50 数据集}: 50类，每类40个样本，共2000个音频
-    \item \textbf{5-Fold 划分}: 每个 fold 包含 400 个样本
-    \item \textbf{训练集}: Fold 1-4 (1600 samples, 80\%)
-    \item \textbf{测试集}: Fold 5 (400 samples, 20\%)
-\end{itemize}
-
-\subsubsubsection{CLAP 模型加载与冻结}
-
-\begin{lstlisting}[language=Python, caption={CLAP 模型冻结}]
-# 加载 CLAP 模型
-print("Loading CLAP model...")
-clap_model = CLAP(version='2023', use_cuda=USE_CUDA)
-
-# 关键步骤1: 冻结 CLAP 参数（不更新权重）
-for param in clap_model.clap.parameters():
-    param.requires_grad = False
-
-# 关键步骤2: 设置为评估模式
-clap_model.clap.eval()
-\end{lstlisting}
-
-\textbf{冻结参数的意义：}
+\begin{enumerate}
+    \item \textbf{数据划分}：采用 5-Fold 交叉验证，Fold 1-4 为训练集（1600样本），Fold 5 为测试集（400样本）
+    \item \textbf{模型冻结}：加载 CLAP 模型后，冻结所有参数（\code{requires\_grad=False}），设置为评估模式
+    \item \textbf{特征提取}：使用冻结的 CLAP 编码器提取 512 维音频嵌入，特征只需提取一次
+    \item \textbf{分类器训练}：训练单层线性分类器（参数量仅 25,650），使用 Adam 优化器，学习率 0.001
+\end{enumerate}
 
 \begin{table}[h]
 \centering
+\caption{Linear Probing 训练配置}
 \begin{tabular}{lll}
 \toprule
-\textbf{操作} & \textbf{效果} & \textbf{原因} \\
+\textbf{配置项} & \textbf{值} & \textbf{说明} \\
 \midrule
-requires\_grad = False & 梯度不回传到CLAP & 保留预训练知识 \\
-eval() & 关闭Dropout/BN更新 & 确保特征一致性 \\
+特征维度 & 512 & CLAP 音频嵌入维度 \\
+分类器 & 单层线性 & Input(512) $\rightarrow$ Output(50) \\
+优化器 & Adam & 学习率 0.001 \\
+训练轮数 & 50 & 通常 10-20 轮即可收敛 \\
 \bottomrule
 \end{tabular}
-\end{table}
-
-\textbf{为什么要冻结？}
-\begin{enumerate}
-    \item \textbf{保留预训练知识}: CLAP在大规模数据上训练，已具备强大的音频-文本对齐能力
-    \item \textbf{防止过拟合}: ESC-50数据量较小（2000样本），微调可能导致过拟合
-    \item \textbf{计算高效}: 只需前向传播一次提取特征，后续训练只更新分类器
-\end{enumerate}
-
-\subsubsubsection{特征提取}
-
-\begin{lstlisting}[language=Python, caption={特征提取函数}]
-def extract_features(dataset, model, desc="Extracting features"):
-    """
-    提取音频的 CLAP embeddings
-
-    Args:
-        dataset: ESC-50 数据集
-        model: 冻结的 CLAP 模型
-        desc: 进度条描述
-
-    Returns:
-        features: [N, embed_dim] 特征矩阵
-        labels: [N] 标签向量
-    """
-    features = []
-    labels = []
-
-    for i in tqdm(range(len(dataset)), desc=desc):
-        audio_path, label_str, one_hot = dataset[i]
-
-        # 关键步骤: 提取音频 embedding（无梯度计算）
-        with torch.no_grad():
-            audio_emb = model.get_audio_embeddings([audio_path], resample=True)
-
-        features.append(audio_emb.cpu())
-        labels.append(torch.argmax(one_hot).item())
-
-    # 拼接为矩阵
-    features = torch.cat(features, dim=0)  # [N, 512] 或 [N, 1024]
-    labels = torch.tensor(labels)          # [N]
-
-    return features, labels
-\end{lstlisting}
-
-\textbf{特征矩阵维度：}
-\begin{itemize}
-    \item 训练集: [1600, 512] - 1600个样本，每个512维特征
-    \item 测试集: [400, 512] - 400个样本，每个512维特征
-\end{itemize}
-
-\textbf{优势：}
-\begin{itemize}
-    \item 特征只提取一次，后续训练无需重复计算
-    \item 大幅减少训练时间
-    \item 可以保存特征到磁盘，方便后续实验
-\end{itemize}
-
-\subsubsubsection{线性分类器}
-
-\begin{lstlisting}[language=Python, caption={线性分类器定义}]
-class LinearClassifier(nn.Module):
-    """
-    最简单的线性分类器
-
-    架构: Input (512-dim) -> Linear -> Output (50-dim)
-    参数量: 512 * 50 + 50 = 25,650
-    """
-    def __init__(self, input_dim, num_classes):
-        super().__init__()
-        # 单层全连接，无激活函数
-        self.fc = nn.Linear(input_dim, num_classes)
-
-    def forward(self, x):
-        return self.fc(x)  # [N, 512] -> [N, 50]
-
-# 创建分类器
-input_dim = train_features.shape[1]  # 512
-num_classes = 50                      # ESC-50 类别数
-classifier = LinearClassifier(input_dim, num_classes)
-\end{lstlisting}
-
-\textbf{为什么使用线性分类器？}
-\begin{enumerate}
-    \item \textbf{假设}: CLAP特征已经具有良好的类别可分性
-    \item \textbf{快速}: 训练速度快，适合快速验证
-    \item \textbf{基线}: 作为更复杂方法的性能基准
-    \item \textbf{泛化}: 简单模型不易过拟合
-\end{enumerate}
-
-\subsubsubsection{训练策略}
-
-\begin{lstlisting}[language=Python, caption={训练循环}]
-# 训练配置
-BATCH_SIZE = 32         # 批量大小（实际全批量训练）
-NUM_EPOCHS = 50         # 训练轮数
-LEARNING_RATE = 0.001   # 学习率
-
-# 损失函数和优化器
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(classifier.parameters(), lr=LEARNING_RATE)
-
-best_acc = 0.0
-best_epoch = 0
-
-for epoch in range(NUM_EPOCHS):
-    # 训练阶段
-    classifier.train()
-
-    optimizer.zero_grad()
-    outputs = classifier(train_features)  # [1600, 50]
-    loss = criterion(outputs, train_labels)
-    loss.backward()
-    optimizer.step()
-
-    # 评估阶段
-    classifier.eval()
-    with torch.no_grad():
-        # 训练集准确率
-        train_outputs = classifier(train_features)
-        train_preds = torch.argmax(train_outputs, dim=1)
-        train_acc = (train_preds == train_labels).float().mean().item()
-
-        # 测试集准确率
-        test_outputs = classifier(test_features)
-        test_preds = torch.argmax(test_outputs, dim=1)
-        test_acc = (test_preds == test_labels).float().mean().item()
-
-    # 保存最佳模型
-    if test_acc > best_acc:
-        best_acc = test_acc
-        best_epoch = epoch + 1
-        torch.save(classifier.state_dict(), 'best_linear_classifier.pth')
-\end{lstlisting}
-
-\textbf{训练特点：}
-
-\begin{table}[h]
-\centering
-\begin{tabular}{lll}
-\toprule
-\textbf{特性} & \textbf{配置} & \textbf{说明} \\
-\midrule
-批量训练 & 全批量 (1600) & 特征已提取，直接全批量训练 \\
-优化器 & Adam & 自适应学习率，收敛快 \\
-学习率 & 0.001 & 标准学习率，适合线性模型 \\
-训练轮数 & 50 & 通常10-20轮即可收敛 \\
-无调度器 & - & 简单任务无需学习率衰减 \\
-无正则化 & - & 线性模型不易过拟合 \\
-\bottomrule
-\end{tabular}
-\caption{训练配置}
 \end{table}
 
 \subsubsection{预期性能}
@@ -1497,318 +1099,25 @@ for epoch in range(NUM_EPOCHS):
 
 \subsubsection{技术实现详解}
 
-\subsubsubsection{超强 TTA (Test Time Augmentation)}
-
-\textbf{配置参数：}
-\begin{lstlisting}[language=Python]
-# TTA 配置
-TRAIN_AUGMENTATIONS = 10  # 训练时每个样本增强10次
-TEST_AUGMENTATIONS = 20   # 测试时每个样本增强20次
-\end{lstlisting}
-
-\begin{lstlisting}[language=Python, caption={超强 TTA 实现}]
-def extract_features_super_tta(dataset, clap_model, num_aug, desc):
-    """
-    超强 TTA: 每个样本多次采样
-
-    Args:
-        dataset: 数据集
-        clap_model: CLAP 预训练模型
-        num_aug: 增强次数 (训练10次, 测试20次)
-        desc: 进度条描述
-
-    Returns:
-        features: 融合后的特征 [N, 4*embed_dim]
-        labels: 标签 [N]
-    """
-    features, labels = [], []
-
-    for i in tqdm(range(len(dataset)), desc=desc):
-        audio_path, _, one_hot = dataset[i]
-        label = torch.argmax(one_hot).item()
-
-        # 关键步骤1: 多次采样同一音频
-        sample_embeddings = []
-        for _ in range(num_aug):
-            with torch.no_grad():
-                # 每次采样都会有随机的增强（时移、噪声等）
-                emb = clap_model.get_audio_embeddings(
-                    [audio_path], resample=True
-                ).cpu()
-                sample_embeddings.append(emb)
-
-        # 关键步骤2: 计算多种统计量
-        embeddings_stack = torch.stack(sample_embeddings)  # [num_aug, 1, embed_dim]
-        mean_emb = embeddings_stack.mean(dim=0)            # 平均值
-        std_emb = embeddings_stack.std(dim=0)              # 标准差
-        max_emb = embeddings_stack.max(dim=0)[0]           # 最大值
-        min_emb = embeddings_stack.min(dim=0)[0]           # 最小值
-
-        # 关键步骤3: 拼接多种统计特征 (特征维度扩展4倍)
-        combined_emb = torch.cat([mean_emb, std_emb, max_emb, min_emb], dim=1)
-
-        features.append(combined_emb)
-        labels.append(label)
-
-    features = torch.cat(features, dim=0)
-    labels = torch.tensor(labels)
-    return features, labels
-\end{lstlisting}
-
-\textbf{设计原理：}
-\begin{itemize}
-    \item \textbf{多次采样}: 同一音频通过不同的随机增强，生成多个变体
-    \item \textbf{统计特征融合}:
-    \begin{itemize}
-        \item mean: 捕获平均特征，代表音频的主要特性
-        \item std: 捕获变化性，反映音频的动态范围
-        \item max: 捕获峰值特征，代表最强的激活
-        \item min: 捕获最小激活，代表背景特征
-    \end{itemize}
-    \item \textbf{特征维度}: 从 [N, D] 扩展到 [N, 4*D]，更丰富的特征表示
-\end{itemize}
-
-\subsubsubsection{Label Smoothing}
-
-\begin{lstlisting}[language=Python, caption={Label Smoothing 实现}]
-class LabelSmoothingLoss(nn.Module):
-    """
-    Label Smoothing: 软化标签，防止过拟合
-
-    将硬标签 [0, 0, 1, 0, ...] 转换为软标签
-    例如: smoothing=0.1, num_classes=50
-    [0, 0, 1, 0, ...] -> [0.002, 0.002, 0.9, 0.002, ...]
-    """
-    def __init__(self, num_classes, smoothing=0.1):
-        super().__init__()
-        self.smoothing = smoothing
-        self.num_classes = num_classes
-
-    def forward(self, pred, target):
-        log_probs = torch.log_softmax(pred, dim=-1)
-
-        with torch.no_grad():
-            # 创建软标签
-            smooth_target = torch.zeros_like(log_probs)
-            # 非目标类的概率: smoothing / (num_classes - 1)
-            smooth_target.fill_(self.smoothing / (self.num_classes - 1))
-            # 目标类的概率: 1 - smoothing
-            smooth_target.scatter_(1, target.unsqueeze(1), 1.0 - self.smoothing)
-
-        loss = (-smooth_target * log_probs).sum(dim=-1).mean()
-        return loss
-\end{lstlisting}
-
-\textbf{设计原理：}
-\begin{itemize}
-    \item \textbf{防止过拟合}: 模型不会对某一类过于自信
-    \item \textbf{提高泛化}: 鼓励模型学习类别间的相似性
-    \item \textbf{数学表达}:
-    \[
-    \begin{aligned}
-    \text{硬标签:} \quad & y_i = 1 \text{ (目标类)}, \quad y_j = 0 \text{ (其他类)} \\
-    \text{软标签:} \quad & y_i = 1 - \epsilon, \quad y_j = \frac{\epsilon}{K-1}
-    \end{aligned}
-    \]
-    其中 $\epsilon = \text{smoothing}$, $K = \text{num\_classes}$
-\end{itemize}
-
-\subsubsubsection{增强分类器架构}
-
-\begin{lstlisting}[language=Python, caption={增强分类器}]
-class EnhancedClassifier(nn.Module):
-    """
-    增强的分类器: 更深的网络结构
-
-    架构:
-    Input (4*embed_dim)
-      -> Linear(512) -> BatchNorm -> ReLU -> Dropout(0.4)
-      -> Linear(256) -> BatchNorm -> ReLU -> Dropout(0.3)
-      -> Linear(50)
-    """
-    def __init__(self, input_dim, num_classes):
-        super().__init__()
-        self.network = nn.Sequential(
-            # 第一层: 降维到512
-            nn.Linear(input_dim, 512),
-            nn.BatchNorm1d(512),          # 批归一化，稳定训练
-            nn.ReLU(),
-            nn.Dropout(0.4),              # 高dropout防止过拟合
-
-            # 第二层: 降维到256
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-
-            # 输出层: 50类
-            nn.Linear(256, num_classes)
-        )
-
-    def forward(self, x):
-        return self.network(x)
-\end{lstlisting}
-
-\textbf{网络结构特点：}
-\begin{enumerate}
-    \item \textbf{深度架构}: 3层全连接，逐步降维
-    \item \textbf{BatchNorm}: 每层后加入批归一化，加速收敛
-    \item \textbf{高Dropout率}: 0.4 $\rightarrow$ 0.3，强力正则化
-    \item \textbf{逐步降维}: input\_dim $\rightarrow$ 512 $\rightarrow$ 256 $\rightarrow$ 50
-\end{enumerate}
-
-\subsubsubsection{训练优化策略}
-
-\begin{lstlisting}[language=Python, caption={训练函数}]
-def train_model(train_features, train_labels, test_features, test_labels,
-                model_idx, use_label_smoothing=True):
-    """训练一个模型"""
-
-    # 设置不同的随机种子，确保模型多样性
-    set_seed(42 * model_idx)
-
-    # 初始化模型
-    input_dim = train_features.shape[1]
-    model = EnhancedClassifier(input_dim, num_classes=50)
-
-    # GPU加速
-    if USE_CUDA:
-        model = model.cuda()
-        train_features = train_features.cuda()
-        train_labels = train_labels.cuda()
-        test_features = test_features.cuda()
-        test_labels = test_labels.cuda()
-
-    # 损失函数: Label Smoothing
-    if use_label_smoothing:
-        criterion = LabelSmoothingLoss(num_classes=50, smoothing=0.1)
-    else:
-        criterion = nn.CrossEntropyLoss()
-
-    # 优化器: AdamW (带权重衰减)
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-
-    # 学习率调度: Cosine Annealing (余弦退火)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
-
-    best_acc = 0.0
-    patience = 20
-    patience_counter = 0
-
-    for epoch in range(NUM_EPOCHS):
-        # 训练阶段
-        model.train()
-        optimizer.zero_grad()
-        outputs = model(train_features)
-        loss = criterion(outputs, train_labels)
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-
-        # 评估阶段
-        model.eval()
-        with torch.no_grad():
-            test_outputs = model(test_features)
-            test_preds = torch.argmax(test_outputs, dim=1)
-            test_acc = (test_preds == test_labels).float().mean().item()
-
-        # 保存最佳模型
-        if test_acc > best_acc:
-            best_acc = test_acc
-            patience_counter = 0
-            torch.save(model.state_dict(), f'best_model_{model_idx}.pth')
-        else:
-            patience_counter += 1
-
-        # Early stopping
-        if patience_counter >= patience:
-            break
-
-    # 加载最佳模型并返回预测概率
-    model.load_state_dict(torch.load(f'best_model_{model_idx}.pth'))
-    model.eval()
-
-    with torch.no_grad():
-        test_outputs = model(test_features)
-        probs = torch.softmax(test_outputs, dim=1).cpu().numpy()
-
-    return model, best_acc, probs
-\end{lstlisting}
-
-\textbf{优化技巧详解：}
-
-\begin{table}[h]
+\begin{table}[H]
 \centering
-\begin{tabular}{lll}
+\caption{Ultimate Optimization 各技术详解}
+\begin{tabular}{@{}llp{6cm}@{}}
 \toprule
-\textbf{技术} & \textbf{配置} & \textbf{作用} \\
+\textbf{技术} & \textbf{配置} & \textbf{原理} \\
 \midrule
-优化器 & AdamW & 自适应学习率 + L2正则化 \\
-权重衰减 & 1e-4 & 防止权重过大，避免过拟合 \\
-学习率调度 & Cosine Annealing & 学习率从初始值逐渐衰减到0 \\
-Early Stopping & patience=20 & 20轮无提升则停止，防止过拟合 \\
-模型保存 & 保存最佳模型 & 使用验证集最佳性能的权重 \\
+\textbf{超强 TTA} & 训练10次/测试20次 & 对同一音频多次随机增强采样，计算 mean/std/max/min 四种统计量拼接为 4$\times$512=2048 维特征 \\
+\textbf{Label Smoothing} & $\epsilon=0.1$ & 软化标签，目标类概率为 0.9，其他类均分 0.1，防止过拟合 \\
+\textbf{增强分类器} & 3层全连接 & 2048$\rightarrow$512$\rightarrow$256$\rightarrow$50，含 BatchNorm 和 Dropout(0.4/0.3) \\
+\textbf{训练优化} & AdamW + Cosine & 权重衰减 1e-4，余弦退火学习率，Early Stopping (patience=20) \\
+\textbf{模型集成} & 3个模型 & 不同随机种子训练，预测概率加权平均 \\
 \bottomrule
 \end{tabular}
-\caption{优化技术配置}
 \end{table}
 
-\subsubsubsection{模型集成 (Ensemble)}
-
-\textbf{训练多个模型：}
-
-\begin{lstlisting}[language=Python, caption={模型集成}]
-NUM_MODELS = 3  # 训练3个独立模型
-
-models = []
-model_accs = []
-all_probs = []
-
-for i in range(1, NUM_MODELS + 1):
-    model, acc, probs = train_model(
-        train_features, train_labels,
-        test_features, test_labels,
-        model_idx=i,  # 不同的随机种子
-        use_label_smoothing=True
-    )
-    models.append(model)
-    model_accs.append(acc)
-    all_probs.append(probs)  # 保存每个模型的预测概率
-\end{lstlisting}
-
-\textbf{集成策略：}
-
-\begin{lstlisting}[language=Python, caption={三种集成方法}]
-all_probs = np.array(all_probs)  # shape: [NUM_MODELS, N, 50]
-true_labels = test_labels.numpy()
-
-# 方法1: 简单平均
-# 对所有模型的预测概率求平均
-avg_probs = all_probs.mean(axis=0)  # shape: [N, 50]
-avg_preds = np.argmax(avg_probs, axis=1)
-avg_acc = accuracy_score(true_labels, avg_preds)
-
-# 方法2: 加权平均
-# 按各模型的准确率加权
-weights = np.array(model_accs) / sum(model_accs)
-weighted_probs = np.zeros_like(all_probs[0])
-for i, w in enumerate(weights):
-    weighted_probs += w * all_probs[i]
-weighted_preds = np.argmax(weighted_probs, axis=1)
-weighted_acc = accuracy_score(true_labels, weighted_preds)
-
-# 方法3: 多数投票
-# 每个模型投一票，取票数最多的类别
-from scipy import stats
-all_pred_labels = np.argmax(all_probs, axis=2)  # shape: [NUM_MODELS, N]
-voting_preds = stats.mode(all_pred_labels, axis=0, keepdims=False)[0]
-voting_acc = accuracy_score(true_labels, voting_preds)
-\end{lstlisting}
-
-\textbf{集成方法对比：}
-
-\begin{table}[h]
+\begin{table}[H]
 \centering
+\caption{集成方法对比}
 \begin{tabular}{llll}
 \toprule
 \textbf{方法} & \textbf{计算方式} & \textbf{优点} & \textbf{适用场景} \\
@@ -1818,7 +1127,6 @@ voting_acc = accuracy_score(true_labels, voting_preds)
 多数投票 & mode(preds) & 鲁棒性强 & 需要硬决策时 \\
 \bottomrule
 \end{tabular}
-\caption{集成方法对比}
 \end{table}
 
 \subsubsection{性能提升路径}
