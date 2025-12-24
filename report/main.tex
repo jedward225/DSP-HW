@@ -1885,6 +1885,183 @@ Enhanced (Ultimate) & Input $\rightarrow$ 512 $\rightarrow$ 256 $\rightarrow$ Ou
     \item \textbf{模型集成} (+0.8\%): 3个模型的预测融合降低方差
 \end{enumerate}
 
+% =========================================================
+\section{将分类模型用于检索任务}
+
+根据作业要求，我们将训练好的分类模型应用于声音检索任务，以对比有无机器学习的效果。
+
+\subsection{方法说明}
+
+将分类模型用于检索的核心思路是：\textbf{去掉最后的分类层，将倒数第二层的特征向量作为音频的嵌入表示}，然后计算查询与候选库之间的余弦相似度进行检索。
+
+具体实现方式：
+\begin{itemize}
+    \item \textbf{CNN}：使用在 ESC-50 上有监督训练的 5 层卷积网络，提取全局平均池化后的特征向量
+    \item \textbf{Contrastive}：使用监督对比学习（SupCon）目标训练的 CNN，直接优化嵌入空间的类内紧凑性和类间分离性
+    \item \textbf{BEATs/CLAP}：使用预训练模型的音频编码器提取嵌入向量
+\end{itemize}
+
+\subsection{有无机器学习的效果对比}
+
+\begin{table}[H]
+\centering
+\caption{分类模型用于检索：有无机器学习的效果对比}
+\label{tab:ml_vs_no_ml}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+\textbf{方法} & \textbf{类型} & \textbf{Hit@1 (\%)} & \textbf{Hit@10 (\%)} & \textbf{MRR} & \textbf{相比DTW提升} \\
+\midrule
+\multicolumn{6}{c}{\textit{传统方法（无机器学习）}} \\
+\midrule
+M1: MFCC+Pool & 手工特征 & 26.40 & 65.00 & 0.374 & -5.45pp \\
+M5: MFCC+DTW & 手工特征+对齐 & 31.65 & 70.45 & 0.430 & 基线 \\
+M6: BoAW & 无监督聚类 & 25.75 & 65.20 & 0.372 & -5.25pp \\
+\midrule
+\multicolumn{6}{c}{\textit{有监督机器学习}} \\
+\midrule
+CNN & 有监督分类 & 71.95 & 82.55 & 0.752 & \textbf{+12.10pp} \\
+Contrastive & 对比学习 & 71.75 & 87.80 & 0.767 & \textbf{+17.35pp} \\
+\midrule
+\multicolumn{6}{c}{\textit{预训练大模型}} \\
+\midrule
+BEATs & 预训练Transformer & 95.15 & 99.10 & 0.965 & \textbf{+28.65pp} \\
+CLAP & 预训练多模态 & 96.00 & 99.50 & 0.973 & \textbf{+29.05pp} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{分析与讨论}
+
+\subsubsection{机器学习带来的显著提升}
+
+从表 \ref{tab:ml_vs_no_ml} 可以清晰地看到机器学习方法的优势：
+
+\begin{enumerate}
+    \item \textbf{有监督 CNN vs 传统方法}：CNN 的 Hit@10 达到 82.55\%，比最佳传统方法 DTW（70.45\%）\textbf{提升 12.10 个百分点}。这说明即使是简单的有监督分类网络，其学习到的特征表示也显著优于手工设计的 MFCC 特征。
+
+    \item \textbf{对比学习的额外收益}：Contrastive 方法（87.80\%）比普通 CNN（82.55\%）\textbf{再提升 5.25pp}。对比学习目标直接优化嵌入空间的结构，使得同类样本聚集、异类样本分离，更适合检索任务。
+
+    \item \textbf{预训练大模型的巨大优势}：CLAP（99.50\%）比 CNN（82.55\%）\textbf{提升近 17pp}，比传统 DTW \textbf{提升 29pp}。这体现了大规模预训练数据和更强模型架构的价值。
+\end{enumerate}
+
+\subsubsection{为什么分类模型能用于检索}
+
+分类模型能够用于检索任务的本质原因是：\textbf{分类任务迫使模型学习具有判别性的特征表示}。
+
+\begin{itemize}
+    \item 为了正确分类 50 个类别，模型必须学会区分不同类别声音的本质特征
+    \item 这些判别性特征自然地使得同类样本在嵌入空间中接近，异类样本远离
+    \item 因此，分类模型的中间层特征可以直接用于基于相似度的检索
+\end{itemize}
+
+\subsubsection{对比学习 vs 分类学习}
+
+对比学习（Contrastive）比普通分类学习（CNN）更适合检索任务，原因包括：
+
+\begin{itemize}
+    \item \textbf{目标函数更匹配}：对比学习直接优化样本间的相似度关系，而分类学习只优化决策边界
+    \item \textbf{嵌入空间更均匀}：对比学习产生的嵌入分布更均匀，避免了分类模型可能出现的"特征塌缩"问题
+    \item \textbf{对困难样本更鲁棒}：对比学习的负样本挖掘机制使模型更关注难区分的样本对
+\end{itemize}
+
+% =========================================================
+\section{与大模型的系统对比}
+
+根据作业要求，我们需要将自训练的模型与大模型进行对比。本节系统比较不同规模模型在分类任务上的表现。
+
+\subsection{模型规模与性能对比}
+
+\begin{table}[H]
+\centering
+\caption{不同规模模型的分类性能系统对比}
+\label{tab:model_scale_comparison}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+\textbf{模型} & \textbf{类型} & \textbf{预训练数据} & \textbf{分类准确率 (\%)} & \textbf{检索 Hit@10 (\%)} \\
+\midrule
+\multicolumn{5}{c}{\textit{小规模模型（从头训练或ImageNet预训练）}} \\
+\midrule
+ResNet18 (Mel) & CNN & ImageNet & 81.75 & -- \\
+ResNet18 (MFCC) & CNN & ImageNet & 70.75 & -- \\
+CNN (5层) & CNN & 无 & -- & 82.55 \\
+\midrule
+\multicolumn{5}{c}{\textit{中规模模型（AudioSet预训练）}} \\
+\midrule
+CNN14 (PANNs) & CNN & AudioSet (2M) & 92.75 & -- \\
+\midrule
+\multicolumn{5}{c}{\textit{大规模预训练模型}} \\
+\midrule
+BEATs (Iter3+) & Transformer & AudioSet (2M) & \textbf{96.50} & 99.10 \\
+CLAP (Zero-shot) & 多模态 & AudioSet+Text & 93.90 & -- \\
+CLAP (Linear Probe) & 多模态 & AudioSet+Text & 96.50 & 99.50 \\
+CLAP (Ultimate) & 多模态 & AudioSet+Text & \textbf{98.00+} & \textbf{99.50} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{关键发现}
+
+\subsubsection{预训练规模的重要性}
+
+\begin{enumerate}
+    \item \textbf{从头训练 vs 预训练}：ResNet18 在 ImageNet 上预训练后迁移到音频任务（81.75\%），虽然 ImageNet 是图像数据集，但预训练仍然提供了有用的底层特征提取能力。
+
+    \item \textbf{领域内预训练的优势}：CNN14 在 AudioSet（200万音频样本）上预训练，准确率达到 92.75\%，比 ImageNet 预训练的 ResNet18 \textbf{高出 11pp}。这说明领域内预训练数据的重要性。
+
+    \item \textbf{大模型的显著优势}：BEATs（96.50\%）和 CLAP（98\%+）进一步提升性能，体现了更大模型容量和更先进架构（Transformer、多模态对齐）的价值。
+\end{enumerate}
+
+\subsubsection{Zero-shot 能力的惊人表现}
+
+CLAP 的 Zero-shot 分类（无需在 ESC-50 上训练）达到 \textbf{93.90\%}，这一结果有重要意义：
+
+\begin{itemize}
+    \item \textbf{超越从头训练的小模型}：Zero-shot CLAP（93.90\%）显著超过从头训练的 ResNet18（81.75\%），提升超过 12pp
+    \item \textbf{无需标注数据}：Zero-shot 方式完全不需要 ESC-50 的训练数据，仅依靠预训练知识和文本描述
+    \item \textbf{实际应用价值}：对于新领域或标注数据稀缺的场景，大模型的 Zero-shot 能力具有巨大的实际价值
+\end{itemize}
+
+\subsubsection{架构的影响：CNN vs Transformer}
+
+\begin{table}[H]
+\centering
+\caption{相同优化策略下 CNN 与 Transformer 架构对比}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{模型} & \textbf{架构} & \textbf{增强策略} & \textbf{准确率 (\%)} \\
+\midrule
+CNN14 & CNN & SpecAugment + Mixup + 解冻 & 92.75 \\
+BEATs & Transformer & SpecAugment + Mixup + 解冻 & 96.50 \\
+\midrule
+\multicolumn{3}{r}{\textbf{Transformer 相对提升}} & \textbf{+3.75pp} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+在相同的训练策略下，BEATs（Transformer）比 CNN14（CNN）高 3.75pp，原因包括：
+\begin{itemize}
+    \item \textbf{全局建模能力}：Transformer 的自注意力机制能够捕获长距离依赖，更好地建模音频的全局结构
+    \item \textbf{声学标记器}：BEATs 使用离散声学标记进行自监督预训练，学习到更丰富的语义表示
+    \item \textbf{数据效率}：Transformer 架构在小数据集（ESC-50 仅 2000 样本）上展现出更强的泛化能力
+\end{itemize}
+
+\subsection{小模型 vs 大模型：如何选择}
+
+\begin{table}[H]
+\centering
+\caption{不同场景下的模型选择建议}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{场景} & \textbf{推荐模型} & \textbf{理由} \\
+\midrule
+资源受限 / 边缘部署 & ResNet18 & 参数少、推理快、精度可接受 \\
+标准服务器部署 & CNN14 / BEATs & 精度与效率的良好平衡 \\
+追求最高精度 & CLAP Ultimate & 98\%+ 准确率，适合精度敏感场景 \\
+无标注数据 & CLAP Zero-shot & 无需训练，开箱即用 \\
+需要可解释性 & 传统方法 + CNN & 特征可理解，便于调试 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 
 \part{总结与感悟}
@@ -1934,6 +2111,8 @@ Enhanced (Ultimate) & Input $\rightarrow$ 512 $\rightarrow$ 256 $\rightarrow$ Ou
 田原 & BEATs 分类实验、消融实验设计 \\
 叶栩言 & CNN14 实验、数据增强策略 \\
 林梓杰 & DSP 核心算法实现、特征工程 \\
+\midrule
+\textit{（注：以上分工为虚构示例，请替换为实际分工）} & \\
 \bottomrule
 \end{tabular}
 \caption{团队分工}

@@ -1,15 +1,3 @@
-"""
-Fast FFT Implementation using Numba JIT
-
-This module implements the Cooley-Tukey FFT algorithm with Numba JIT acceleration.
-Optimizations:
-1. Numba JIT compilation (nopython mode)
-2. Iterative (non-recursive) implementation - avoids Python call overhead
-3. In-place bit-reversal permutation
-4. Cache compiled functions
-
-Performance: ~20-100x faster than pure Python recursive version
-"""
 
 import numpy as np
 from numba import jit, prange

@@ -10,7 +10,7 @@
 
 1. **自实现 DSP 算法**：FFT（Cooley-Tukey）、STFT、MFCC，使用 Numba JIT 加速
 2. **多种分类模型**：ResNet18、BEATs、CNN14、CLAP
-3. **完整检索系统**：17 种检索方法，含传统方法与深度学习方法
+3. **完整检索系统**：13 种检索方法，含传统方法与深度学习方法
 4. **全面实验分析**：超参数对比、消融实验、效率分析
 
 ### 核心结果
@@ -161,10 +161,10 @@ python scripts/run_frame_experiments.py --quick
 
 ### 任务二：声音分类
 - [x] 自实现 FFT、STFT、MFCC
-- [x] 多种神经网络模型
-- [x] 帧长/帧移超参数对比
-- [x] 与大模型对比（CLAP、BEATs）
-- [x] 将分类模型用于检索任务
+- [x] 多种神经网络模型（ResNet18、CNN14、BEATs、CLAP）
+- [x] 帧长/帧移超参数对比（最优：n_fft=2048, hop=512）
+- [x] 与大模型对比（CLAP 98%+ vs ResNet18 81.75%）
+- [x] 将分类模型用于检索（CNN 82.55% vs DTW 70.45%，提升 12pp）
 
 ---
 

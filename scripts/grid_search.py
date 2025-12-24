@@ -14,10 +14,6 @@ Usage:
 
     # Run quick test (fewer epochs)
     python scripts/grid_search.py --mode quick
-
-Reference accuracies from previous teams:
-- [Ref-1] ResNet18: 83.25%
-- [Ref-2] ResNet: 70.50%
 """
 
 import os

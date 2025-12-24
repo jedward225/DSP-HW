@@ -1,10 +1,3 @@
-"""
-Quick test script for CLAP zero-shot classification on ESC-50.
-Expected accuracy: ~92% on Fold 5
-
-Reference: [Ref-2] 苏慧学等 - Zero-shot: 92.25% (Fold5)
-"""
-
 import os
 import sys
 from pathlib import Path
