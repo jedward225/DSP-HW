@@ -68,7 +68,7 @@ DSP-HW/
 ├── experiments/                # 实验记录
 ├── checkpoints/                # 模型权重
 ├── report/                     # 报告
-└── ESC-50/                     # 数据集（不上传）
+└── ESC-50/                     # 数据集
 ```
 
 ---
