@@ -267,6 +267,102 @@ CMVN 通过标准化去除信道效应：
 \]
 该向量维度为 $2D$，同时编码平均谱特征及其波动。
 
+\subsubsection{自实现核心算法性能分析}
+
+本项目要求自主实现 FFT、STFT、MFCC 等核心信号处理算法，不直接调用 SciPy/librosa 的核心函数。以下对各模块的实现方案与性能进行分析。
+
+\textbf{（1）FFT 实现}
+
+我们采用 \textbf{Cooley-Tukey Radix-2 DIT}（Decimation-In-Time）迭代式算法实现 FFT，复杂度为 $O(N\log N)$。为提升性能，使用 \textbf{Numba JIT} 编译为本地机器码，并支持并行批量处理。
+
+\begin{table}[H]
+\centering
+\caption{FFT 精度与性能对比（vs SciPy）}
+\begin{tabular}{@{}rrrrc@{}}
+\toprule
+长度 $N$ & 自实现 (ms) & SciPy (ms) & 速度比 & 最大误差 \\
+\midrule
+256  & 0.012 & 0.007 & 1.7$\times$ & $8.4\times10^{-14}$ \\
+1024 & 0.029 & 0.013 & 2.3$\times$ & $1.3\times10^{-12}$ \\
+4096 & 0.108 & 0.040 & 2.7$\times$ & $8.0\times10^{-12}$ \\
+8192 & 0.226 & 0.081 & 2.8$\times$ & $1.0\times10^{-11}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+自实现 FFT 与 SciPy 的最大误差在 $10^{-11}$ 量级，满足双精度浮点数的理论精度要求。速度约为 SciPy 的 2--3 倍慢，这是合理的，因为 SciPy 底层使用高度优化的 C/Fortran 库（FFTW 或 Intel MKL）。
+
+\textbf{（2）STFT 实现}
+
+STFT 基于自实现的 FFT 构建，采用以下优化策略：
+\begin{itemize}
+    \item \textbf{向量化帧提取}：使用 NumPy 高级索引一次性提取所有帧
+    \item \textbf{批量 FFT}：调用 Numba 并行的 \code{rfft_batch()} 函数处理所有帧
+    \item \textbf{多种窗函数}：支持 Hann、Hamming、Blackman、Bartlett、Tukey 窗
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\caption{STFT 精度验证（vs librosa）}
+\begin{tabular}{@{}llc@{}}
+\toprule
+测试项 & 最大误差 & 状态 \\
+\midrule
+STFT (Hann 窗)     & $1.09\times10^{-12}$ & \checkmark \\
+STFT (Hamming 窗)  & $1.10\times10^{-12}$ & \checkmark \\
+STFT (Blackman 窗) & $1.05\times10^{-12}$ & \checkmark \\
+ISTFT 重建         & $6.97\times10^{-14}$ & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+STFT 输出与 librosa 完全一致（误差 $<10^{-12}$），ISTFT 可实现完美重建（误差 $<10^{-13}$）。
+
+\textbf{（3）MFCC 实现}
+
+MFCC 流水线完全基于自实现组件构建：
+
+\begin{enumerate}
+    \item \textbf{STFT}：调用自实现的 \code{stft()} 函数
+    \item \textbf{功率谱}：$P(m,k) = |X(m,k)|^2$
+    \item \textbf{Mel 滤波器组}：使用 Slaney 公式进行 Hz$\leftrightarrow$Mel 转换，构建三角滤波器
+    \item \textbf{对数压缩}：$S_k = 10\log_{10}(M_k + \epsilon)$
+    \item \textbf{DCT-II}：离散余弦变换，采用正交归一化
+\end{enumerate}
+
+\begin{table}[H]
+\centering
+\caption{MFCC 各组件精度验证（vs librosa/scipy）}
+\begin{tabular}{@{}llc@{}}
+\toprule
+组件 & 最大误差 & 状态 \\
+\midrule
+Mel 滤波器组 & $2.58\times10^{-9}$  & \checkmark \\
+DCT-II       & $3.53\times10^{-14}$ & \checkmark \\
+完整 MFCC    & $2.46\times10^{-7}$  & \checkmark \\
+Delta 特征   & $<10^{-10}$          & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{（4）性能总结}
+
+\begin{table}[H]
+\centering
+\caption{自实现算法性能总结}
+\begin{tabular}{@{}llll@{}}
+\toprule
+模块 & 核心优化技术 & 精度 & 相对标准库 \\
+\midrule
+FFT  & Numba JIT + 并行批处理 & $<10^{-11}$ & 2--3$\times$ 慢 \\
+STFT & 向量化 + 批量 FFT      & $<10^{-12}$ & 可接受 \\
+MFCC & 端到端自实现           & $<10^{-6}$  & 可接受 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+自实现代码在保证数值精度的前提下，性能处于合理范围。与 SciPy/librosa 的速度差距主要源于后者使用 C/Fortran 编写的高度优化库。在实际应用中，Numba JIT 的首次编译开销可通过缓存消除，批量处理场景下性能差距进一步缩小。
+
 \subsection{检索方法}
 
 我们评估 \textbf{13 种检索方法}，分为三类。具体评估结果见第三部分。
